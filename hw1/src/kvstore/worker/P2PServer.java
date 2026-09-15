@@ -67,11 +67,14 @@ public class P2PServer extends Thread {
                 return;
             }
             Message req = Message.parse(line);
+            // P2P 메시지도 다른 통신과 동일하게 clock을 실어 보내고 sync한다 (VirtualClock 설계 의도).
+            clock.sync(req.getDouble("clock", 0));
 
             if ("P2P_QUERY".equals(req.getType())) {
                 // 상대 Worker가 "네 큐 크기가 몇이야?" 라고 물어봄 -> 바로 답해준다.
                 Message res = new Message("P2P_STATUS");
                 res.set("size", String.valueOf(readyQueue.size()));
+                res.set("clock", String.valueOf(clock.get()));
                 out.println(res.toLine());
 
             } else if ("P2P_TRANSFER".equals(req.getType())) {
@@ -94,6 +97,7 @@ public class P2PServer extends Thread {
 
                 Message ack = new Message("P2P_ACK");
                 ack.set("count", String.valueOf(accepted));
+                ack.set("clock", String.valueOf(clock.get()));
                 out.println(ack.toLine());
             }
         } catch (Exception e) {

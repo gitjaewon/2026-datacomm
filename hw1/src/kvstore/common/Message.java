@@ -21,11 +21,14 @@ import java.util.Map;
  *   [Worker -> Master]
  *     RESULT    : key, status(SUCCESS/FAIL), clock
  *     QUEUE     : size, clock            (자신의 현재 큐 크기를 보고)
+ *     STATS     : received, success, fail, avgWait, p2pSent, p2pReceived, totalTime, clock
+ *                 (SHUTDOWN을 받고 종료하기 직전, Master가 최종 STAT 로그에 노드별 통계를
+ *                  남길 수 있도록 자신의 최종 통계를 한 번 보고한다)
  *   [Worker <-> Worker, P2P]
- *     P2P_QUERY   : fromId
- *     P2P_STATUS  : size                  (P2P_QUERY에 대한 응답)
- *     P2P_TRANSFER: keys(세미콜론 구분), values(세미콜론 구분)
- *     P2P_ACK     : count                 (P2P_TRANSFER에 대한 응답)
+ *     P2P_QUERY   : fromId, clock
+ *     P2P_STATUS  : size, clock           (P2P_QUERY에 대한 응답)
+ *     P2P_TRANSFER: keys(세미콜론 구분), values(세미콜론 구분), clock
+ *     P2P_ACK     : count, clock          (P2P_TRANSFER에 대한 응답)
  */
 public class Message {
 
