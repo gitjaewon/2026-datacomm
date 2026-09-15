@@ -1,0 +1,121 @@
+package kvstore.worker;
+
+import kvstore.common.Constants;
+import kvstore.common.FileLogger;
+import kvstore.common.Message;
+import kvstore.common.VirtualClock;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * 다른 Worker가 보내는 P2P 요청(큐 상태 조회 P2P_QUERY, 작업 이전 P2P_TRANSFER)을
+ * 받아서 그 자리에서 바로 응답해주는 리스너.
+ *
+ * ReadyQueue는 이미 synchronized로 thread-safe하게 만들어져 있으므로,
+ * 이 Thread가 WorkerThread의 메인 루프와 동시에 접근해도 안전하다.
+ *
+ * (참고: MasterLink는 "읽기 전용 배달부"였지만, P2P 요청은 그 자리에서 즉시 응답해야
+ *  하는 request-response 형태라 여기서는 읽기+쓰기를 한 번에 처리하는 구조로 만들었다.)
+ */
+public class P2PServer extends Thread {
+
+    private final int port;
+    private final ReadyQueue readyQueue;
+    private final FileLogger log;
+    private final VirtualClock clock;
+    private final AtomicInteger p2pReceivedCounter; // WorkerThread와 공유하는 통계 카운터
+
+    private volatile boolean running = true;
+    private ServerSocket serverSocket;
+
+    public P2PServer(int port, ReadyQueue readyQueue, FileLogger log, VirtualClock clock,
+                      AtomicInteger p2pReceivedCounter) {
+        this.port = port;
+        this.readyQueue = readyQueue;
+        this.log = log;
+        this.clock = clock;
+        this.p2pReceivedCounter = p2pReceivedCounter;
+        setDaemon(true);
+        setName("P2PServer-" + port);
+    }
+
+    @Override
+    public void run() {
+        try {
+            serverSocket = new ServerSocket(port);
+            while (running) {
+                Socket socket = serverSocket.accept();
+                handleOneRequest(socket);
+            }
+        } catch (IOException e) {
+            // shutdown()에서 serverSocket을 닫으면 정상적으로 여기로 빠져나온다.
+        }
+    }
+
+    private void handleOneRequest(Socket socket) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+
+            String line = in.readLine();
+            if (line == null) {
+                return;
+            }
+            Message req = Message.parse(line);
+
+            if ("P2P_QUERY".equals(req.getType())) {
+                // 상대 Worker가 "네 큐 크기가 몇이야?" 라고 물어봄 -> 바로 답해준다.
+                Message res = new Message("P2P_STATUS");
+                res.set("size", String.valueOf(readyQueue.size()));
+                out.println(res.toLine());
+
+            } else if ("P2P_TRANSFER".equals(req.getType())) {
+                // 상대 Worker가 작업 몇 개를 나에게 떠넘김 -> 내 큐에 최대한 담고, 담은 개수만큼 ACK.
+                String[] keys = req.get("keys").split(";");
+                String[] values = req.get("values").split(";");
+                int accepted = 0;
+                for (int i = 0; i < keys.length; i++) {
+                    boolean ok = readyQueue.offer(new Task(keys[i], Integer.parseInt(values[i]),
+                            false, true, clock.get()));
+                    if (ok) {
+                        accepted++;
+                    }
+                }
+                p2pReceivedCounter.addAndGet(accepted);
+                logQueueWarnIfNeeded();
+
+                log.log(clock.get(), "LB", "SUCCESS",
+                        "Received " + accepted + " tasks via P2P. Queue: " + readyQueue.size() + "/10");
+
+                Message ack = new Message("P2P_ACK");
+                ack.set("count", String.valueOf(accepted));
+                out.println(ack.toLine());
+            }
+        } catch (Exception e) {
+            // 요청 하나 처리 실패는 전체 Worker를 죽이지 않고 무시한다.
+        }
+    }
+
+    /** 과제 0-1 표의 요구사항: 큐가 70%를 초과한 상태에서 작업이 들고날 때마다 WARN을 기록. */
+    private void logQueueWarnIfNeeded() {
+        int size = readyQueue.size();
+        if (size > Constants.QUEUE_MAX * Constants.QUEUE_WARN_RATIO) {
+            log.log(clock.get(), "QUEUE", "WARN", "Queue over 70% (" + size + "/10) after P2P receive.");
+        }
+    }
+
+    public void shutdown() {
+        running = false;
+        try {
+            if (serverSocket != null) {
+                serverSocket.close();
+            }
+        } catch (IOException ignored) {
+        }
+    }
+}
