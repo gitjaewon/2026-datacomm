@@ -2,6 +2,7 @@ package kvstore.master;
 
 import kvstore.common.Constants;
 import kvstore.common.FileLogger;
+import kvstore.common.Message;
 import kvstore.common.VirtualClock;
 
 import java.io.IOException;
@@ -10,6 +11,7 @@ import java.net.Socket;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -37,6 +39,31 @@ public class Master {
     private final Map<Integer, ClientHandler> workers = new ConcurrentHashMap<>();
     private final AtomicInteger nextWorkerId = new AtomicInteger(1);
     private final CountDownLatch allWorkersConnected = new CountDownLatch(Constants.NUM_WORKERS);
+
+    // 3장 성능 평가 지표: 장애로 인해 다른 Worker에 재할당된 횟수 (FAIL -> requeue 시에만 카운트,
+    // 큐가 가득 차서 잠시 대기시키는 경우는 "장애"가 아니므로 카운트하지 않는다)
+    private final AtomicInteger reassignCount = new AtomicInteger(0);
+
+    // Worker가 종료 직전에 STATS 메시지로 보고하는 최종 통계 (Master.txt 최종 STAT에 노드별로 함께 기록하기 위함)
+    private final Map<Integer, WorkerFinalStat> workerFinalStats = new ConcurrentHashMap<>();
+    private final CountDownLatch statsReceived = new CountDownLatch(Constants.NUM_WORKERS);
+
+    /** Worker가 보고한 종료 시점 통계 한 벌 (Worker STATS 메시지 필드 그대로). */
+    private static class WorkerFinalStat {
+        final int received, success, fail, p2pSent, p2pReceived;
+        final double avgWait, totalTime;
+
+        WorkerFinalStat(int received, int success, int fail, double avgWait,
+                         int p2pSent, int p2pReceived, double totalTime) {
+            this.received = received;
+            this.success = success;
+            this.fail = fail;
+            this.avgWait = avgWait;
+            this.p2pSent = p2pSent;
+            this.p2pReceived = p2pReceived;
+            this.totalTime = totalTime;
+        }
+    }
 
     public VirtualClock getClock() {
         return clock;
@@ -159,9 +186,19 @@ public class Master {
                     "KV[" + key + "] stored by Worker" + workerId + ". value=" + kvStore.valueOf(key));
         } else {
             kvStore.requeueAsPriority(key);
+            int n = reassignCount.incrementAndGet();
             log.log(clock.get(), "RESULT", "FAIL",
-                    "KV[" + key + "] FAILED by Worker" + workerId + " (20% rule). Requeing...");
+                    "KV[" + key + "] FAILED by Worker" + workerId + " (20% rule). Requeued for reassignment (#" + n + ").");
         }
+    }
+
+    /** ClientHandler가 Worker 종료 직전 STATS 메시지를 받으면 호출하는 콜백. */
+    public void onWorkerStats(int workerId, Message msg) {
+        workerFinalStats.put(workerId, new WorkerFinalStat(
+                msg.getInt("received"), msg.getInt("success"), msg.getInt("fail"),
+                msg.getDouble("avgWait", 0), msg.getInt("p2pSent"), msg.getInt("p2pReceived"),
+                msg.getDouble("totalTime", 0)));
+        statsReceived.countDown();
     }
 
     public void onWorkerDisconnected(int workerId) {
@@ -174,12 +211,41 @@ public class Master {
             h.sendShutdown(t);
         }
 
-        log.log(t, "STAT", "INFO", "=== FINAL STATISTICS ===");
-        log.log(t, "STAT", "INFO", "Total KV pairs processed : " + kvStore.doneCount());
-        log.log(t, "STAT", "INFO", "Total execution time     : " + t + " sec");
-        // TODO: Worker별 처리/성공/실패 통계, P2P 이벤트 총합, 장애 재할당 총합 등
-        //   3장의 6개 지표를 여기서 다 합쳐서 출력하고 싶다면, RESULT 처리 시점에
-        //   Map<Integer, WorkerStat> 같은 걸 만들어 같이 누적해두면 된다.
+        // 각 Worker가 SHUTDOWN을 받고 종료하기 직전 STATS를 보고할 때까지 잠시 대기한다.
+        // (전부 이미 처리 완료된 상태라 실제로는 순식간에 도착한다. 타임아웃은 안전장치일 뿐.)
+        try {
+            statsReceived.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        double finalT = clock.get();
+
+        log.log(finalT, "STAT", "INFO", "=== FINAL STATISTICS ===");
+        log.log(finalT, "STAT", "INFO", "Total KV pairs processed     : " + kvStore.doneCount() + " / " + Constants.TOTAL_KV_PAIRS);
+        log.log(finalT, "STAT", "INFO", "Total execution time         : " + finalT + " sec");
+        log.log(finalT, "STAT", "INFO", "Total FAIL->reassign events  : " + reassignCount.get());
+
+        int totalP2PEvents = 0;
+        for (int workerId = 1; workerId <= Constants.NUM_WORKERS; workerId++) {
+            WorkerFinalStat s = workerFinalStats.get(workerId);
+            if (s == null) {
+                log.log(finalT, "STAT", "WARN", "Worker" + workerId + " - no STATS report received before shutdown.");
+                continue;
+            }
+            totalP2PEvents += s.p2pSent;
+            log.log(finalT, "STAT", "INFO", String.format(
+                    "Worker%d - received=%d success=%d fail=%d avgWaitTime=%.2fs p2pSent=%d p2pReceived=%d totalTime=%.2fs",
+                    workerId, s.received, s.success, s.fail, s.avgWait, s.p2pSent, s.p2pReceived, s.totalTime));
+        }
+        log.log(finalT, "STAT", "INFO", "Total P2P load-balance events : " + totalP2PEvents);
+
+        // 과제 1장 필수 요구사항: 완료된 KV 저장소 전체(5,000쌍)를 최종 로그에 남긴다.
+        Map<String, Integer> finalStore = kvStore.snapshotStore();
+        log.log(finalT, "KVSTORE", "INFO", "=== FINAL KV STORE DUMP (" + finalStore.size() + " pairs) ===");
+        for (Map.Entry<String, Integer> e : finalStore.entrySet()) {
+            log.log(finalT, "KVSTORE", "INFO", e.getKey() + "=" + e.getValue());
+        }
 
         log.log(clock.advance(0.05), "TERMINATE", "SUCCESS", "Graceful shutdown. All workers disconnected.");
         log.close();
