@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -74,5 +75,13 @@ public class KVStore {
 
     public boolean isAllDone() {
         return store.size() >= Constants.TOTAL_KV_PAIRS;
+    }
+
+    /**
+     * 최종 출력용: 완료된 KV 저장소 전체를 key 정렬된 스냅샷으로 반환.
+     * (과제 명세 1장: "전체 처리 완료 시 KV 저장소 전체(5,000쌍)... 로그에 기록")
+     */
+    public synchronized Map<String, Integer> snapshotStore() {
+        return new TreeMap<>(store);
     }
 }

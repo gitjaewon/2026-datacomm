@@ -53,6 +53,9 @@ public class ClientHandler extends Thread {
                     case "RESULT":
                         master.onWorkerResult(workerId, msg.get("key"), msg.get("status"));
                         break;
+                    case "STATS":
+                        master.onWorkerStats(workerId, msg);
+                        break;
                     default:
                         // TODO: 필요하면 다른 메시지 타입도 여기서 처리하면 된다.
                         break;

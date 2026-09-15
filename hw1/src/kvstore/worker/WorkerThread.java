@@ -188,10 +188,12 @@ public class WorkerThread extends Thread {
     }
 
     private void sendResult(String key, String status) {
+        // 모든 노드 간 통신은 1초 지연을 가상으로 반영 (과제 명세: "네트워크 지연은 1초로 고정 시뮬레이션")
+        double t = clock.advance(Constants.NETWORK_DELAY);
         Message msg = new Message("RESULT");
         msg.set("key", key);
         msg.set("status", status);
-        msg.set("clock", String.valueOf(clock.get()));
+        msg.set("clock", String.valueOf(t));
         masterLink.send(msg);
     }
 
@@ -240,6 +242,10 @@ public class WorkerThread extends Thread {
                 }
 
                 List<Task> toMove = readyQueue.pollFromTail(moveCount);
+                // 과제 0-1: 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
+                // 여기선 작업이 큐에서 빠져나가는(P2P로 이전되는) 이벤트이므로 나간 직후 체크한다.
+                logQueueWarnIfNeeded();
+
                 int acked = transferTasksToPeer(peerPort, toMove);
                 p2pSent.addAndGet(acked);
 
@@ -252,6 +258,7 @@ public class WorkerThread extends Thread {
                     for (int i = acked; i < toMove.size(); i++) {
                         readyQueue.offer(toMove.get(i));
                     }
+                    logQueueWarnIfNeeded(); // 되돌아와서 다시 들고난 이벤트
                     log.log(clock.get(), "LB", "WARN",
                             (toMove.size() - acked) + " tasks rejected by peer (race condition), returned to my queue.");
                 }
@@ -272,9 +279,11 @@ public class WorkerThread extends Thread {
 
             Message query = new Message("P2P_QUERY");
             query.set("fromId", String.valueOf(workerId));
+            query.set("clock", String.valueOf(clock.get()));
             out.println(query.toLine());
 
             Message res = Message.parse(in.readLine());
+            clock.sync(res.getDouble("clock", 0));
             return res.getInt("size");
         } catch (IOException e) {
             return null; // peer가 응답이 없으면 이번엔 넘기지 않는다.
@@ -301,12 +310,16 @@ public class WorkerThread extends Thread {
                 values.append(t.value);
             }
 
+            // P2P 작업 이전도 노드 간 통신이므로 1초 지연을 가상으로 반영.
+            double t = clock.advance(Constants.NETWORK_DELAY);
             Message transfer = new Message("P2P_TRANSFER");
             transfer.set("keys", keys.toString());
             transfer.set("values", values.toString());
+            transfer.set("clock", String.valueOf(t));
             out.println(transfer.toLine());
 
             Message ack = Message.parse(in.readLine());
+            clock.sync(ack.getDouble("clock", 0));
             return ack.getInt("count");
         } catch (IOException e) {
             // 전송 자체가 실패해도(peer 다운 등) 0을 반환하면, 호출한 checkAndOffloadIfOverloaded()가
@@ -326,6 +339,21 @@ public class WorkerThread extends Thread {
         log.log(t, "STAT", "INFO", String.format("Avg waiting time        : %.2f sec", avgWait));
         log.log(t, "STAT", "INFO", "P2P tasks transferred   : " + p2pSent.get() + " (sent) / " + p2pReceived.get() + " (recv)");
         log.log(t, "STAT", "INFO", "Total execution time    : " + t + " sec");
+
+        // Master가 최종 STAT 로그에 "노드별 처리 통계"를 남길 수 있도록 종료 전에 요약 통계를 보고한다.
+        Message stats = new Message("STATS");
+        stats.set("received", String.valueOf(totalReceived));
+        stats.set("success", String.valueOf(totalSuccess));
+        stats.set("fail", String.valueOf(totalFail));
+        stats.set("avgWait", String.valueOf(avgWait));
+        stats.set("p2pSent", String.valueOf(p2pSent.get()));
+        stats.set("p2pReceived", String.valueOf(p2pReceived.get()));
+        stats.set("totalTime", String.valueOf(t));
+        // STATS 전송도 다른 Worker->Master 통신(RESULT)과 동일하게 1초 네트워크 지연을 반영한다.
+        // (totalTime은 이 지연이 섞이기 전, Worker 자신이 실제로 종료한 시각을 남기기 위해 t를 그대로 쓴다)
+        double sendClock = clock.advance(Constants.NETWORK_DELAY);
+        stats.set("clock", String.valueOf(sendClock));
+        masterLink.send(stats);
 
         log.log(clock.advance(0.05), "TERMINATE", "SUCCESS",
                 "Worker" + workerId + " gracefully disconnected from Master.");
