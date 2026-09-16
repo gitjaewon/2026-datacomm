@@ -271,6 +271,10 @@ public class WorkerThread extends Thread {
                 }
 
                 List<Task> toMove = readyQueue.pollFromTail(moveCount);
+                if (toMove.isEmpty()) {
+                    // 뒤쪽이 전부 재할당 작업이라 넘길 게 없음 -> 이 peer는 건너뛰고 다음 peer 시도.
+                    continue;
+                }
                 // 과제 0-1: 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
                 // 여기선 작업이 큐에서 빠져나가는(P2P로 이전되는) 이벤트이므로 나간 직후 체크한다.
                 logQueueWarnIfNeeded();
