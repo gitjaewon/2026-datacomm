@@ -16,14 +16,6 @@ import java.io.PrintWriter;
  */
 public class FileLogger {
 
-    // ANSI 색상 코드. 콘솔 출력에서만 STATUS별로 색을 입히기 위한 것이라,
-    // 실제 제출용 로그 파일(Master.txt 등)에는 절대 섞여 들어가지 않는다.
-    private static final String RESET = "[0m";
-    private static final String COLOR_INFO = "[36m";    // cyan
-    private static final String COLOR_SUCCESS = "[32m"; // green
-    private static final String COLOR_FAIL = "[31m";    // red
-    private static final String COLOR_WARN = "[33m";    // yellow
-
     private final String nodeName;
     private final PrintWriter writer;
 
@@ -39,21 +31,7 @@ public class FileLogger {
 
     public synchronized void log(double clock, String event, String status, String message) {
         String line = String.format("[%.2f] %s | %-9s | %-7s | %s", clock, nodeName, event, status, message);
-        writer.println(line); // 파일에는 색상 코드 없이 그대로 기록 (제출용)
-        System.out.println(colorFor(status) + line + RESET); // 콘솔에서만 STATUS별로 색상 표시
-    }
-
-    private String colorFor(String status) {
-        switch (status) {
-            case "SUCCESS":
-                return COLOR_SUCCESS;
-            case "FAIL":
-                return COLOR_FAIL;
-            case "WARN":
-                return COLOR_WARN;
-            default:
-                return COLOR_INFO;
-        }
+        writer.println(line);
     }
 
     public synchronized void close() {
