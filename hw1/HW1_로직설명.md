@@ -57,7 +57,7 @@ Worker (로컬 PC, 1개 프로세스 = WorkerLauncher)
    - `-1`이면 그 key를 다시 priorityQueue로 되돌리고 20ms 대기 후 재시도 (busy-wait 방지용이지 System Clock과는 무관)
    - 정상 분배 시: `clock.advance(NETWORK_DELAY)` 후 `ClientHandler.sendTask()`로 TASK 전송, `scheduler.onDispatchedOptimistically()`로 낙관적으로 큐 크기 +1 (Worker가 실제 QUEUE 보고를 하기 전 몰아보내기 방지)
 4. **RESULT 수신 (`onWorkerResult`)**: `ClientHandler`가 소켓에서 `RESULT` 메시지를 읽을 때마다 호출
-   - `SUCCESS` → `kvStore.markSuccess(key)`로 저장 완료 처리
+   - `SUCCESS` → `kvStore.markSuccess(key)`로 저장 완료 처리 + `logProgressIfNeeded()`로 완료 개수가 500의 배수(500, 1000, ...)에 도달할 때마다 `DISTRIB` INFO 로그로 "Progress: n/5000 (x%)" + `scheduler.describeQueues()`(Worker별 큐 크기 스냅샷) 기록 (4-1 Master.txt 예시 재현용, 채점 필수 지표는 아님)
    - `FAIL` → `kvStore.requeueAsPriority(key)`로 최우선 재시도 등록 + `reassignCount` 1 증가 (이 카운터만 "장애로 인한 재할당" 수를 셈 — 큐가 꽉 차서 잠깐 미룬 건 포함 안 함)
 5. **STATS 수신 (`onWorkerStats`)**: Worker가 종료 직전 자기 최종 통계(수신/성공/실패/평균대기/P2P송수신/총시간)를 보고하면 `workerFinalStats` 맵에 저장하고 `statsReceived` 래치 감소
 6. **종료 (`shutdownAll`)**: 전체 5,000개 완료되면

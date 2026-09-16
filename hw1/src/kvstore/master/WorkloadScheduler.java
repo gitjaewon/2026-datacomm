@@ -3,6 +3,7 @@ package kvstore.master;
 import kvstore.common.Constants;
 
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -42,6 +43,21 @@ public class WorkloadScheduler {
      */
     public void onDispatchedOptimistically(int workerId) {
         queueSizes.merge(workerId, 1, Integer::sum);
+    }
+
+    /**
+     * 진행률 로그(4-1 Master.txt 예시: "Worker1: queue=7, Worker2: queue=5, ...")용
+     * 현재 Master가 파악하고 있는 각 Worker의 큐 크기를 한 줄로 요약한다.
+     */
+    public String describeQueues() {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<Integer, Integer> e : new TreeMap<>(queueSizes).entrySet()) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append("Worker").append(e.getKey()).append(": queue=").append(e.getValue());
+        }
+        return sb.toString();
     }
 
     /** 큐가 가장 여유로운 Worker의 id를 반환. 전부 가득 찼으면 -1. */

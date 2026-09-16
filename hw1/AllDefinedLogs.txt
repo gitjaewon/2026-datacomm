@@ -1,0 +1,95 @@
+====================================================================
+AllDefinedLogs.txt
+프로그램에서 정의한 모든 로그 메시지(EVENT) 명세 및 설명
+====================================================================
+
+공통 로그 형식:
+  [clock] NODE | EVENT | STATUS | message
+
+- clock  : VirtualClock 누적 값(초 단위, 실제 시간이 아님)
+- NODE   : MASTER / WORKER1 / WORKER2 / WORKER3 / WORKER4
+- EVENT  : 아래에 정리된 자유 형식 이벤트 이름
+- STATUS : INFO / SUCCESS / FAIL / WARN 중 하나
+
+--------------------------------------------------------------------
+[Master.txt] Master 노드가 사용하는 EVENT
+--------------------------------------------------------------------
+
+INIT (INFO, SUCCESS)
+  - System Clock 시작, 5,000개 KV 쌍 생성 시작/완료 시 기록
+  - 4개 Worker 전부 접속 완료 후 작업 분배 시작 시에도 기록(INFO)
+
+CONNECT (SUCCESS)
+  - Worker가 접속 직후 REGISTER 메시지로 자기 workerId를 알려오면,
+    그 workerId로 정상 등록됐음을 기록
+    (예: "Worker1 connected. Ready Queue initialized (0/10).")
+
+DISTRIB (INFO, WARN)
+  - INFO : 특정 Worker에게 KV 작업을 분배할 때마다 기록
+           (예: "Dispatching KV[a3f7] -> Worker2")
+  - INFO : 진행률 요약(500개 단위)과 각 Worker의 현재 큐 크기 스냅샷
+           (예: "Progress: 500 / 5000 KV pairs stored (10.0%)")
+  - WARN : 특정 Worker의 큐가 가득 차서(10/10) 그 Worker로의 분배를
+           일시 중단할 때 기록
+
+RESULT (SUCCESS, FAIL)
+  - Worker로부터 작업 처리 결과(RESULT 메시지)를 받을 때마다 기록
+  - SUCCESS : KV 저장 완료
+  - FAIL    : 20% 규칙으로 실패, 최우선 큐(Priority Queue)에 재등록
+              하며 재할당 번호(#n)를 함께 남김
+
+DISCONNECT (WARN)
+  - Worker와의 소켓 연결이 끊어졌을 때 기록 (정상 종료 시 SHUTDOWN
+    이후에도 소켓이 닫히므로 이 로그가 함께 남음)
+
+STAT (INFO, WARN)
+  - INFO : 전체 처리 완료 후 최종 통계(총 처리 건수, 총 수행시간,
+           장애 재할당 총 횟수, Worker별 통계, P2P 이벤트 총합) 기록
+  - WARN : 종료 시점까지 특정 Worker의 STATS 보고를 못 받은 경우
+
+KVSTORE (INFO)
+  - 전체 처리 완료 시 KV 저장소 전체(5,000쌍)를 key 정렬하여
+    한 줄씩 덤프
+
+TERMINATE (SUCCESS)
+  - 모든 Worker에 SHUTDOWN 전송 및 최종 로그 기록 후, Graceful
+    Termination 완료 시 기록
+
+--------------------------------------------------------------------
+[WorkerN.txt] Worker 노드가 사용하는 EVENT
+--------------------------------------------------------------------
+
+INIT (INFO)
+  - Worker 스레드 시작 및 Master 접속 시도 시작 시 기록
+
+CONNECT (SUCCESS)
+  - Master 접속(TCP 소켓 연결 + REGISTER 전송) 성공 시 기록
+
+RECV (INFO)
+  - Master로부터 TASK 메시지(작업)를 수신했을 때 기록
+    (재할당/최우선 작업이면 메시지에 [PRIORITY] 표시)
+
+PROC (INFO, SUCCESS, FAIL)
+  - INFO    : 작업 처리를 시작할 때(예상 처리 시간과 함께) 기록
+  - SUCCESS : 80% 확률로 처리 성공, KV 저장 완료
+  - FAIL    : 20% 확률로 처리 실패, Master에 FAIL 통지
+
+QUEUE (WARN)
+  - Ready Queue가 70%(7/10)를 초과한 상태에서 작업이 들고날 때마다
+    (상태 전이 1회가 아니라 매번) 기록
+  - 큐가 이미 가득 찬(10/10) 상태에서 새 TASK가 도착해 즉시
+    거부(overflow)할 때도 이 EVENT로 기록
+
+LB (SUCCESS, WARN)
+  - P2P 부하 분산(Load Balancing) 관련 이벤트
+  - SUCCESS : 내 작업을 다른 Worker에게 이전 성공, 또는 다른
+              Worker로부터 작업을 이전받았을 때
+  - WARN    : peer가 이전 요청을 다 받아주지 못해(레이스 컨디션)
+              일부 작업이 내 큐로 롤백됐을 때
+
+STAT (INFO)
+  - Worker 종료 직전, 자신의 최종 통계(수신/성공/실패/평균대기시간/
+    P2P 송수신/총 수행시간)를 기록
+
+TERMINATE (SUCCESS)
+  - SHUTDOWN 메시지 수신 후 Master 연결을 정상 종료할 때 기록
