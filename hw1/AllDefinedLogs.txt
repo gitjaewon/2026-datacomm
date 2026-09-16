@@ -25,26 +25,35 @@ CONNECT (SUCCESS)
     (예: "Worker1 connected. Ready Queue initialized (0/10).")
 
 DISTRIB (INFO, WARN)
-  - INFO : 특정 Worker에게 KV 작업을 분배할 때마다 기록
+  - INFO : 특정 Worker에게 신규 KV 작업을 분배할 때마다 기록
            (예: "Dispatching KV[a3f7] -> Worker2")
   - INFO : 진행률 요약(500개 단위)과 각 Worker의 현재 큐 크기 스냅샷
            (예: "Progress: 500 / 5000 KV pairs stored (10.0%)")
   - WARN : 특정 Worker의 큐가 가득 차서(10/10) 그 Worker로의 분배를
            일시 중단할 때 기록
+  - WARN : 실패한 작업을 최우선 큐에서 꺼내 다른 Worker에게 재할당할 때
+           기록. 직전에 실패시킨 Worker는 후보에서 제외
+           (예: "KV[a3f7] priority requeue. Reassigning to Worker3 (excluded Worker2).")
+  - WARN : Worker 큐가 가득 차서 거절된 작업을 다시 큐에 넣을 때 기록.
+           장애가 아니므로 재할당 번호와 별도로 번호(#n)를 매김
+           (예: "KV[a3f7] rejected by Worker1 (queue overflow). Requeued (#3).")
 
 RESULT (SUCCESS, FAIL)
   - Worker로부터 작업 처리 결과(RESULT 메시지)를 받을 때마다 기록
   - SUCCESS : KV 저장 완료
-  - FAIL    : 20% 규칙으로 실패, 최우선 큐(Priority Queue)에 재등록
-              하며 재할당 번호(#n)를 함께 남김
+  - FAIL    : 20% 규칙으로 처리에 실패한 경우에만 기록. 최우선 큐
+              (Priority Queue)에 재등록하며 재할당 번호(#n)를 함께 남김
+              (큐 초과 거절은 여기가 아니라 DISTRIB WARN으로 기록)
 
 DISCONNECT (WARN)
   - Worker와의 소켓 연결이 끊어졌을 때 기록 (정상 종료 시 SHUTDOWN
     이후에도 소켓이 닫히므로 이 로그가 함께 남음)
 
 STAT (INFO, WARN)
-  - INFO : 전체 처리 완료 후 최종 통계(총 처리 건수, 총 수행시간,
-           장애 재할당 총 횟수, Worker별 통계, P2P 이벤트 총합) 기록
+  - INFO : 전체 처리 완료 후 최종 통계 기록
+           (총 처리 건수, 총 SUCCESS/FAIL, 장애 재할당 횟수, 재할당 분배 수,
+            큐 초과 거절 수, P2P 부하 분산 이벤트 횟수(회), P2P 이전 작업 수(건),
+            총 수행시간, 그리고 Worker별 통계 한 줄씩)
   - WARN : 종료 시점까지 특정 Worker의 STATS 보고를 못 받은 경우
 
 KVSTORE (INFO)
@@ -65,20 +74,26 @@ INIT (INFO)
 CONNECT (SUCCESS)
   - Master 접속(TCP 소켓 연결 + REGISTER 전송) 성공 시 기록
 
-RECV (INFO)
-  - Master로부터 TASK 메시지(작업)를 수신했을 때 기록
-    (재할당/최우선 작업이면 메시지에 [PRIORITY] 표시)
+RECV (INFO, FAIL)
+  - INFO : Master로부터 TASK 메시지(작업)를 수신했을 때 기록
+           일반 작업 : "Received task: KV[a3f7] (Value=83)"
+           재할당 작업: "Received PRIORITY task (reassigned): KV[a3f7] (Value=83)"
+  - FAIL : 큐가 이미 가득 차서(10/10) 받은 작업을 즉시 거절했을 때 기록
+           (예: "KV[a3f7] rejected - queue overflow (10/10). Master notified.")
 
 PROC (INFO, SUCCESS, FAIL)
-  - INFO    : 작업 처리를 시작할 때(예상 처리 시간과 함께) 기록
-  - SUCCESS : 80% 확률로 처리 성공, KV 저장 완료
+  - INFO    : 작업 처리를 시작할 때(예상 처리 시간과 함께) 기록.
+              재할당 작업이면 "Processing retry KV[...] (priority queue)"
+  - SUCCESS : 80% 확률로 처리 성공, KV 저장 완료.
+              재할당 작업이면 "stored on retry"
   - FAIL    : 20% 확률로 처리 실패, Master에 FAIL 통지
+              (재할당 작업에도 같은 80/20 규칙 적용)
 
 QUEUE (WARN)
   - Ready Queue가 70%(7/10)를 초과한 상태에서 작업이 들고날 때마다
     (상태 전이 1회가 아니라 매번) 기록
   - 큐가 이미 가득 찬(10/10) 상태에서 새 TASK가 도착해 즉시
-    거부(overflow)할 때도 이 EVENT로 기록
+    거부(overflow)할 때도 이 EVENT로 기록 (RECV FAIL과 함께 남음)
 
 LB (SUCCESS, WARN)
   - P2P 부하 분산(Load Balancing) 관련 이벤트
@@ -88,8 +103,10 @@ LB (SUCCESS, WARN)
               일부 작업이 내 큐로 롤백됐을 때
 
 STAT (INFO)
-  - Worker 종료 직전, 자신의 최종 통계(수신/성공/실패/평균대기시간/
-    P2P 송수신/총 수행시간)를 기록
+  - Worker 종료 직전, 자신의 최종 통계를 기록
+    (수신 작업 수, SUCCESS(처리량), FAIL(20% 규칙), 재할당 작업 수신 수,
+     큐 초과 거절 수, 평균 대기시간, P2P 부하 분산 이벤트 횟수(회),
+     P2P 이전 작업 수(송신/수신), 총 수행시간)
 
 TERMINATE (SUCCESS)
   - SHUTDOWN 메시지 수신 후 Master 연결을 정상 종료할 때 기록
