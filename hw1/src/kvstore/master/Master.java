@@ -317,6 +317,14 @@ public class Master {
                     s.avgWait, s.p2pEvents, s.p2pSent, s.p2pReceived, s.totalTime));
         }
 
+        // 과제 1장 필수 요구사항: 완료된 KV 저장소 전체(5,000쌍)를 최종 로그에 남긴다.
+        // STAT 요약보다 먼저 찍어서, 로그 파일 맨 끝은 한눈에 보기 좋은 통계 요약 + TERMINATE로 끝나게 한다.
+        Map<String, Integer> finalStore = kvStore.snapshotStore();
+        log.log(finalT, "KVSTORE", "INFO", "=== FINAL KV STORE DUMP (" + finalStore.size() + " pairs) ===");
+        for (Map.Entry<String, Integer> e : finalStore.entrySet()) {
+            log.log(finalT, "KVSTORE", "INFO", e.getKey() + "=" + e.getValue());
+        }
+
         log.log(finalT, "STAT", "INFO", "=== FINAL STATISTICS ===");
         log.log(finalT, "STAT", "INFO", "Total KV pairs processed     : " + kvStore.doneCount() + " / " + Constants.TOTAL_KV_PAIRS);
         log.log(finalT, "STAT", "INFO", "Total SUCCESS                : " + sumSuccess);
@@ -333,13 +341,6 @@ public class Master {
         }
         for (int workerId : missingStats) {
             log.log(finalT, "STAT", "WARN", "Worker" + workerId + " - no STATS report received before shutdown.");
-        }
-
-        // 과제 1장 필수 요구사항: 완료된 KV 저장소 전체(5,000쌍)를 최종 로그에 남긴다.
-        Map<String, Integer> finalStore = kvStore.snapshotStore();
-        log.log(finalT, "KVSTORE", "INFO", "=== FINAL KV STORE DUMP (" + finalStore.size() + " pairs) ===");
-        for (Map.Entry<String, Integer> e : finalStore.entrySet()) {
-            log.log(finalT, "KVSTORE", "INFO", e.getKey() + "=" + e.getValue());
         }
 
         log.log(finalT, "TERMINATE", "SUCCESS", "Graceful shutdown. All workers disconnected.");
