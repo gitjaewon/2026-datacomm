@@ -50,10 +50,13 @@ public class WorkerThread extends Thread {
     private int totalReceived = 0;
     private int totalSuccess = 0;
     private int totalFail = 0;
+    private int retryReceived = 0;  // Master에게 재할당(retry=true)으로 받은 작업 수
+    private int queueRejected = 0;  // 큐가 가득 차서 거절한 작업 수
     private double totalWaitTime = 0.0; // 평균 대기시간 계산용 (합계)
     private int waitSampleCount = 0;
     private final AtomicInteger p2pSent = new AtomicInteger(0);
     private final AtomicInteger p2pReceived = new AtomicInteger(0);
+    private final AtomicInteger p2pEvents = new AtomicInteger(0); // P2P 이전이 일어난 횟수 (p2pSent는 이전한 작업 건수)
 
     public WorkerThread(int workerId, String masterHost, int masterPort,
                          int myP2PPort, int[] peerP2PPorts, String peerHost) {
@@ -154,14 +157,24 @@ public class WorkerThread extends Thread {
                 boolean isRetry = Boolean.parseBoolean(msg.get("retry"));
                 totalReceived++;
 
-                log.log(clock.get(), "RECV", "INFO",
-                        "Received task: KV[" + key + "] (Value=" + value + ")" + (isRetry ? " [PRIORITY]" : ""));
+                if (isRetry) {
+                    retryReceived++;
+                    log.log(clock.get(), "RECV", "INFO",
+                            "Received PRIORITY task (reassigned): KV[" + key + "] (Value=" + value + ")");
+                } else {
+                    log.log(clock.get(), "RECV", "INFO",
+                            "Received task: KV[" + key + "] (Value=" + value + ")");
+                }
 
                 boolean accepted = readyQueue.offer(new Task(key, value, isRetry, false, clock.get()));
                 if (!accepted) {
                     // 큐 초과 -> 즉시 FAIL 처리 후 Master에 통지 (과제 0-1: 10개 초과는 즉시 FAIL)
+                    // Master가 20% 처리 실패와 구분해서 셀 수 있도록 결과는 REJECTED로 보낸다.
+                    queueRejected++;
                     log.log(clock.get(), "QUEUE", "WARN", "Queue full (10/10). New task request rejected.");
-                    sendResult(key, "FAIL");
+                    log.log(clock.get(), "RECV", "FAIL",
+                            "KV[" + key + "] rejected - queue overflow (10/10). Master notified.");
+                    sendResult(key, "REJECTED");
                 } else {
                     logQueueWarnIfNeeded();
                     reportQueueSize();
@@ -185,12 +198,14 @@ public class WorkerThread extends Thread {
         waitSampleCount++;
 
         double t = clock.advance(procTime);
-        log.log(startClock, "PROC", "INFO", "Processing KV[" + task.key + "]... estimated time=" + procTime + "s");
+        log.log(startClock, "PROC", "INFO", "Processing " + (task.isRetry ? "retry " : "") + "KV[" + task.key
+                + "]... estimated time=" + procTime + "s" + (task.isRetry ? " (priority queue)" : ""));
 
         boolean success = random.nextDouble() < Constants.SUCCESS_RATE; // 80% 성공 / 20% 실패
         if (success) {
             totalSuccess++;
-            log.log(t, "PROC", "SUCCESS", "KV[" + task.key + "] stored. time=" + procTime + "s");
+            log.log(t, "PROC", "SUCCESS", "KV[" + task.key + "] stored"
+                    + (task.isRetry ? " on retry" : "") + ". time=" + procTime + "s");
             sendResult(task.key, "SUCCESS");
         } else {
             totalFail++;
@@ -262,12 +277,16 @@ public class WorkerThread extends Thread {
 
                 int acked = transferTasksToPeer(peerPort, toMove);
                 p2pSent.addAndGet(acked);
+                if (acked > 0) {
+                    p2pEvents.incrementAndGet();
+                }
 
                 // 동시성 문제 대응: peer에게 물어본 시점과 실제로 전송한 시점 사이에
                 // 상황이 바뀌어서(Master가 그 사이 peer에게 새 작업을 배급했거나, 다른 Worker도
                 // 동시에 같은 peer에게 넘기려고 했거나 등) peer 큐가 이미 차서 일부만 받아줬을 수 있다.
                 // 못 받아들여진 나머지를 그냥 버리면 해당 KV가 영원히 유실되어 전체 시뮬레이션이
                 // 끝나지 않게 되므로, 반드시 내 큐로 되돌려놓는다 (방금 뺀 자리라 100% 들어간다).
+                // 받는 쪽(P2PServer)은 앞에서부터 받다가 멈추므로, acked 이후 작업이 못 받은 작업이다.
                 if (acked < toMove.size()) {
                     for (int i = acked; i < toMove.size(); i++) {
                         readyQueue.offer(toMove.get(i));
@@ -347,12 +366,15 @@ public class WorkerThread extends Thread {
         double avgWait = waitSampleCount > 0 ? (totalWaitTime / waitSampleCount) : 0.0;
 
         log.log(t, "STAT", "INFO", "=== WORKER" + workerId + " FINAL STATISTICS ===");
-        log.log(t, "STAT", "INFO", "Total tasks received  : " + totalReceived);
-        log.log(t, "STAT", "INFO", "SUCCESS                : " + totalSuccess);
-        log.log(t, "STAT", "INFO", "FAIL                    : " + totalFail);
+        log.log(t, "STAT", "INFO", "Total tasks received    : " + totalReceived);
+        log.log(t, "STAT", "INFO", "SUCCESS (처리량)        : " + totalSuccess);
+        log.log(t, "STAT", "INFO", "FAIL (20% rule)         : " + totalFail);
+        log.log(t, "STAT", "INFO", "Priority (retry) tasks  : " + retryReceived + " 건");
+        log.log(t, "STAT", "INFO", "Queue overflow rejects  : " + queueRejected + " 건");
         log.log(t, "STAT", "INFO", String.format("Avg waiting time        : %.2f sec", avgWait));
+        log.log(t, "STAT", "INFO", "P2P load balance events : " + p2pEvents.get() + " 회");
         log.log(t, "STAT", "INFO", "P2P tasks transferred   : " + p2pSent.get() + " (sent) / " + p2pReceived.get() + " (recv)");
-        log.log(t, "STAT", "INFO", "Total execution time    : " + t + " sec");
+        log.log(t, "STAT", "INFO", String.format("Total execution time    : %.2f sec", t));
 
         // Master가 최종 STAT 로그에 "노드별 처리 통계"를 남길 수 있도록 종료 전에 요약 통계를 보고한다.
         Message stats = new Message("STATS");
@@ -362,6 +384,9 @@ public class WorkerThread extends Thread {
         stats.set("avgWait", String.valueOf(avgWait));
         stats.set("p2pSent", String.valueOf(p2pSent.get()));
         stats.set("p2pReceived", String.valueOf(p2pReceived.get()));
+        stats.set("p2pEvents", String.valueOf(p2pEvents.get()));
+        stats.set("retryReceived", String.valueOf(retryReceived));
+        stats.set("rejected", String.valueOf(queueRejected));
         stats.set("totalTime", String.valueOf(t));
         // STATS 전송도 다른 Worker->Master 통신(RESULT)과 동일하게 1초 네트워크 지연을 반영한다.
         // (totalTime은 이 지연이 섞이기 전, Worker 자신이 실제로 종료한 시각을 남기기 위해 t를 그대로 쓴다)

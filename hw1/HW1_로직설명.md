@@ -52,18 +52,20 @@ Worker (로컬 PC, 1개 프로세스 = WorkerLauncher)
    - 타임아웃 안에 REGISTER를 안 보내거나(포트 스캐너, 헬스체크 등 AWS 공인 IP에 흔히 들어오는 엉뚱한 접속) 파싱이 실패하면 그 연결은 조용히 닫고 카운트하지 않은 채 계속 accept한다 — 이게 없으면 그런 연결 하나 때문에 `readLine()`에서 영원히 멈춰서, 진짜 Worker 4개가 나중에 접속해도 전체가 먹통이 되는 문제가 있었음.
    - 정상 등록되면 `scheduler.registerWorker()`, `ClientHandler` 시작, `CONNECT` 로그, `allWorkersConnected.countDown()`.
 3. **DISTRIB (동적 분배 루프, `runDispatchLoop`)**: `kvStore.isAllDone()`이 false인 동안 반복
-   - `kvStore.nextPendingKey()` : **priorityQueue(재시도 대기)를 항상 먼저** 꺼내고, 없으면 `pendingQueue`에서 꺼냄 → "최우선 큐" 요구사항 구현
-   - `scheduler.pickWorkerForDispatch()` : **최소 큐 우선(Least Queue First)** — 큐가 가장 여유로운(size가 가장 작은) Worker를 고름, 전부 10/10이면 `-1`
-   - `-1`이면 그 key를 다시 priorityQueue로 되돌리고 20ms 대기 후 재시도 (busy-wait 방지용이지 System Clock과는 무관)
-   - 정상 분배 시: `clock.advance(NETWORK_DELAY)` 후 `ClientHandler.sendTask()`로 TASK 전송, `scheduler.onDispatchedOptimistically()`로 낙관적으로 큐 크기 +1 (Worker가 실제 QUEUE 보고를 하기 전 몰아보내기 방지)
+   - `kvStore.nextPendingKey()` : **priorityQueue(재시도 대기)를 항상 먼저** 꺼내고, 없으면 `pendingQueue`에서 꺼냄. 어느 큐에서 꺼냈는지 `PendingKey.isRetry`로 함께 반환
+   - `scheduler.pickWorkerForDispatch(excludeWorkerId)` : **최소 큐 우선(Least Queue First)** — 큐가 가장 여유로운 Worker를 고름. 재할당 작업이면 `kvStore.lastFailedWorkerOf(key)`로 직전에 실패시킨 Worker를 제외. 보낼 Worker가 없으면 `-1`
+   - `-1`이면 `kvStore.returnUndispatched()`로 원래 있던 큐(pending/priority)에 되돌리고 20ms 대기 후 재시도 (busy-wait 방지용이지 System Clock과는 무관)
+   - 정상 분배 시: `clock.advance(NETWORK_DELAY)` → `kvStore.markDispatched()`로 재할당 여부 기록 (거절 응답이 바로 와도 원래 큐를 알 수 있도록 **전송 전에** 기록) → `ClientHandler.sendTask(key, value, isRetry, t)`로 TASK 전송 → `scheduler.onDispatchedOptimistically()`로 낙관적으로 큐 크기 +1
+   - 로그: 신규 작업은 `DISTRIB INFO "Dispatching ..."`, 재할당 작업은 `DISTRIB WARN "priority requeue. Reassigning to WorkerN (excluded WorkerM)."`
 4. **RESULT 수신 (`onWorkerResult`)**: `ClientHandler`가 소켓에서 `RESULT` 메시지를 읽을 때마다 호출
    - `SUCCESS` → `kvStore.markSuccess(key)`로 저장 완료 처리 + `logProgressIfNeeded()`로 완료 개수가 500의 배수(500, 1000, ...)에 도달할 때마다 `DISTRIB` INFO 로그로 "Progress: n/5000 (x%)" + `scheduler.describeQueues()`(Worker별 큐 크기 스냅샷) 기록 (4-1 Master.txt 예시 재현용, 채점 필수 지표는 아님)
-   - `FAIL` → `kvStore.requeueAsPriority(key)`로 최우선 재시도 등록 + `reassignCount` 1 증가 (이 카운터만 "장애로 인한 재할당" 수를 셈 — 큐가 꽉 차서 잠깐 미룬 건 포함 안 함)
-5. **STATS 수신 (`onWorkerStats`)**: Worker가 종료 직전 자기 최종 통계(수신/성공/실패/평균대기/P2P송수신/총시간)를 보고하면 `workerFinalStats` 맵에 저장하고 `statsReceived` 래치 감소
+   - `FAIL` → `kvStore.requeueAfterFail(key, workerId)`로 최우선 재시도 등록 + 실패시킨 Worker 기록 + `reassignCount` 1 증가 (20% 규칙 실패만 셈)
+   - `REJECTED` → Worker 큐가 가득 차서 거절된 경우. `kvStore.requeueAfterReject(key)`로 원래 큐에 되돌리고 `queueRejectCount` 1 증가 (장애가 아니므로 `reassignCount`와 분리), `DISTRIB WARN` 로그
+5. **STATS 수신 (`onWorkerStats`)**: Worker가 종료 직전 자기 최종 통계(수신/성공/실패/재할당 수신/큐 초과 거절/평균대기/P2P 이벤트 횟수/P2P송수신/총시간)를 보고하면 `workerFinalStats` 맵에 저장하고 `statsReceived` 래치 감소
 6. **종료 (`shutdownAll`)**: 전체 5,000개 완료되면
    - 모든 Worker에 `SHUTDOWN` 전송
    - `statsReceived.await()`로 Worker들의 STATS 도착까지 대기 (전부 이미 끝난 상태라 사실상 즉시 도착, 30초는 안전장치)
-   - Master `STAT` 로그: 총 처리 건수, 총 수행시간, 장애 재할당 총 횟수, Worker별(수신/성공/실패/평균대기/P2P송수신/총시간), P2P 이벤트 총합
+   - Master `STAT` 로그: 총 처리 건수, 총 SUCCESS/FAIL, 장애 재할당 횟수, 재할당 분배 수, 큐 초과 거절 수, P2P 이벤트 횟수(회), P2P 이전 작업 수(건), 총 수행시간, Worker별 통계 한 줄씩. STATS를 못 받은 Worker는 `STAT WARN`
    - `KVSTORE` 로그: 완료된 5,000쌍 전체를 key 정렬해서 한 줄씩 덤프 (`KVStore.snapshotStore()`)
    - `TERMINATE` : Graceful shutdown (별도 시간 지연 없이 직전 STAT과 같은 시각으로 기록)
 
@@ -86,18 +88,18 @@ while (!shutdownRequested) {
 - **3)이 실시간이 아니라 VirtualClock 기준인 이유**: 전체 시뮬레이션이 실시간 대기 없이 몇 초 만에 끝나버리는데 점검 주기만 진짜 1~3초(벽시계)로 재면, Worker 1개가 전체 실행 동안 점검할 기회 자체가 몇 번 안 돼서(전체 실행 10초 안팎 ÷ 평균 2초 ≈ 5번) P2P가 사실상 거의 안 일어난다. Worker 자신의 `clock.get()` 누적값 기준으로 "가상 1~3초"가 지났는지 판단하면, 실행 속도와 무관하게 실제로 걸렸을 시간만큼 점검 기회가 생긴다.
 
 세부 동작:
-- **TASK 수신**: `readyQueue.offer()` 시도 → 꽉 찼으면(10/10) 즉시 `RESULT=FAIL` 응답(큐 오버플로), 성공하면 70% 초과 WARN 체크 + `QUEUE` 크기 보고
+- **TASK 수신**: `retry=true`면 재할당 작업으로 보고 `retryReceived` 증가, `RECV INFO "Received PRIORITY task (reassigned)"` 로그. `readyQueue.offer()` 시도 → 꽉 찼으면(10/10) 즉시 거절하고 `RECV FAIL` 로그 + `RESULT=REJECTED` 응답(`queueRejected` 증가), 성공하면 70% 초과 WARN 체크 + `QUEUE` 크기 보고
 - **processTask**: 실제 sleep 없이 `clock.advance(procTime)`(1~3초 랜덤)만 하고, `random.nextDouble() < 0.8`로 성공/실패 판정 → `RESULT` 전송 (`sendResult()`가 전송 전 1초 네트워크 지연 반영)
 - **P2P 과부하 체크 (`checkAndOffloadIfOverloaded`)**:
   1. 내 큐 크기 × 평균처리시간(2초) = 예상 대기시간, 15초 이하면 아무것도 안 함
   2. peer들을 순서대로 `P2P_QUERY`로 조회, **나보다 큐가 적은 첫 번째 peer**를 찾음
-  3. `(내 큐 - peer 큐)/2` 만큼 `readyQueue.pollFromTail()`로 뒤쪽(늦게 처리될) 작업을 뽑아 `P2P_TRANSFER`로 전송
-  4. peer가 다 못 받아주면(레이스 컨디션) 남은 건 내 큐로 롤백 → 유실 없음
-  5. 매 이전마다 로컬 `p2pSent` 카운터 누적, WARN/QUEUE 로그 갱신
+  3. `(내 큐 - peer 큐)/2` 만큼 `readyQueue.pollFromTail()`로 뒤쪽(늦게 처리될) 작업을 뽑아 `P2P_TRANSFER`로 전송. 재할당 작업은 뽑지 않음
+  4. peer가 다 못 받아주면(레이스 컨디션) ACK 개수 이후의 작업을 내 큐로 롤백 → 유실·중복 없음 (peer가 앞에서부터 받다가 멈추기 때문에 가능, 아래 P2PServer 참고)
+  5. 이전한 작업 수는 `p2pSent`에, 이전이 1건 이상 성공한 횟수는 `p2pEvents`에 누적 (3장 지표 "P2P 부하 분산 이벤트 횟수"는 회 단위), WARN/QUEUE 로그 갱신
 - **접속 시 (`connectToMaster`)**: 소켓 연결 직후 가장 먼저 `REGISTER|workerId=N`을 보내서 자기 정체를 Master에 알림 (3장 참고)
-- **P2PServer**: 다른 Worker의 `P2P_QUERY`(내 큐 크기 응답), `P2P_TRANSFER`(작업 수신 후 `p2pReceived` 누적, ACK 응답) 처리
+- **P2PServer**: 다른 Worker의 `P2P_QUERY`(내 큐 크기 응답), `P2P_TRANSFER`(작업 수신 후 `p2pReceived` 누적, ACK 응답) 처리. 받은 작업은 앞에서부터 큐에 넣다가 하나라도 못 넣으면 멈춤 — 중간 것을 건너뛰고 뒤의 것을 받으면, 보낸 쪽 롤백 계산과 어긋나 작업 유실/중복이 생기기 때문
 - **종료 (SHUTDOWN 수신)**: 루프 탈출 → `printFinalStatsAndClose()`
-  - `STAT` 로그: 수신/성공/실패/평균대기시간/P2P송수신/총수행시간
+  - `STAT` 로그: 수신/성공(처리량)/실패/재할당 수신/큐 초과 거절/평균대기시간/P2P 이벤트 횟수/P2P송수신/총수행시간
   - `STATS` 메시지를 Master로 전송 (Master가 최종 STAT에 합산하도록)
   - `TERMINATE` 로그, 소켓/서버 정리
 
@@ -105,9 +107,10 @@ while (!shutdownRequested) {
 
 ## 5. Ready Queue 규칙 (`ReadyQueue.java`)
 
-- 최대 10개, `offer()`는 꽉 차면 `false` (즉시 FAIL 트리거)
+- 최대 10개, `offer()`는 꽉 차면 `false` (즉시 거절 트리거)
+- `offer()`는 재할당 작업(`isRetry`)을 **맨 앞**, 일반 작업을 맨 뒤에 넣음 → 재할당 작업 최우선 처리
 - 70% 초과(=8개 이상) 상태에서 작업이 들고날 때마다(enqueue/dequeue 이벤트마다) `WARN` 로그 — 상태 전이 1회가 아니라 매번
-- `pollFromTail()` : P2P로 넘길 때는 큐 **뒤쪽**(늦게 처리될 예정) 작업을 우선 이전 — 곧 처리될 앞쪽 작업까지 넘기면 오히려 지연이 커지기 때문
+- `pollFromTail()` : P2P로 넘길 때는 큐 **뒤쪽**(늦게 처리될 예정) 작업을 우선 이전 — 곧 처리될 앞쪽 작업까지 넘기면 오히려 지연이 커지기 때문. 재할당 작업은 넘기면 받는 쪽에서 최우선 처리가 풀리므로 이전 대상에서 제외
 
 ---
 
@@ -116,15 +119,15 @@ while (!shutdownRequested) {
 | 방향 | TYPE | 필드 |
 |---|---|---|
 | Worker→Master | `REGISTER` | workerId (접속 직후 1회, 자기 정체 확인용) |
-| Master→Worker | `TASK` | key, value, retry, clock |
+| Master→Worker | `TASK` | key, value, retry(재할당 작업이면 true), clock |
 | Master→Worker | `SHUTDOWN` | clock |
-| Worker→Master | `RESULT` | key, status(SUCCESS/FAIL), clock |
+| Worker→Master | `RESULT` | key, status(SUCCESS/FAIL/REJECTED), clock |
 | Worker→Master | `QUEUE` | size, clock |
-| Worker→Master | `STATS` | received, success, fail, avgWait, p2pSent, p2pReceived, totalTime, clock |
+| Worker→Master | `STATS` | received, success, fail, avgWait, p2pSent, p2pReceived, p2pEvents, retryReceived, rejected, totalTime, clock |
 | Worker↔Worker | `P2P_QUERY` | fromId, clock |
 | Worker↔Worker | `P2P_STATUS` | size, clock |
 | Worker↔Worker | `P2P_TRANSFER` | keys(`;`구분), values(`;`구분), clock |
-| Worker↔Worker | `P2P_ACK` | count, clock |
+| Worker↔Worker | `P2P_ACK` | count(앞에서부터 받은 작업 수), clock |
 
 ---
 
@@ -140,8 +143,10 @@ while (!shutdownRequested) {
 
 ## 8. 알려진 설계상 트레이드오프
 
-- `KVStore.priorityQueue`는 "장애 재시도"와 "일시적으로 보낼 Worker가 없어서 대기"라는 두 가지 경우를 같은 큐에 섞어서 처리함 → 로직상 문제는 없지만(둘 다 최우선으로 재시도하면 되므로), `reassignCount`는 앞의 경우(FAIL)만 세도록 분리해뒀음
+- `KVStore.priorityQueue`에는 장애 재시도 작업만 들어감. 보낼 Worker가 없거나 큐 초과로 거절된 작업은 원래 있던 큐로 돌아가므로, 신규 작업이 재할당 작업으로 바뀌지 않음. `reassignCount`는 20% 규칙 실패만, `queueRejectCount`는 큐 초과 거절만 셈
+- 재할당 작업은 직전에 실패시킨 Worker를 제외하고 보내므로, 나머지 Worker가 전부 가득 차 있으면 제외한 Worker가 비어 있어도 잠시 기다림 (Worker들이 계속 큐를 비우므로 멈추지는 않음)
+- `Master.txt`는 분배 로그를 TASK 전송 **뒤에** 찍기 때문에, Worker 응답 로그가 먼저 찍혀 시각이 거꾸로 된 줄이 가끔 생김 (동작에는 영향 없음)
 - P2P 이전 시 목적지 peer는 "포트 번호 순서대로 처음 만난, 나보다 큐가 적은 곳" — 가장 여유로운 peer를 찾는 것도 아니고 라운드로빈도 아님 (Readme에 이 알고리즘 그대로 서술하면 됨)
 - 네트워크 지연은 "실제 데이터 전송성" 메시지(TASK/RESULT/P2P_TRANSFER/STATS)에만 부과하고, 상태 조회성 메시지(QUEUE/P2P_QUERY/STATUS/ACK)에는 부과하지 않음 — 이유는 위 2장 참고
 - Master의 workerId는 accept 순서가 아니라 REGISTER 메시지 기반이라, `Master.txt`의 CONNECT/DISTRIB 로그에 찍히는 WorkerN 번호가 실제 어느 물리 스레드(`WorkerN.txt`)인지 실행할 때마다 접속 타이밍에 따라 달라질 수 있음 — 그래도 항상 REGISTER 값으로 정확히 매핑되므로 로그 간 교차 확인은 항상 일치함
-- P2P 점검 주기(1~3초)는 VirtualClock 기준이라, 실제 실행 속도(빠르든 느리든)와 무관하게 "가상 시간이 얼마나 지났는가"만으로 판단함 — 로컬 테스트(5,000건 기준)에서 대략 수백 건(예: 524건) 정도의 P2P 이벤트가 자연스럽게 발생하는 것을 확인함
+- P2P 점검 주기(1~3초)는 VirtualClock 기준이라, 실제 실행 속도(빠르든 느리든)와 무관하게 "가상 시간이 얼마나 지났는가"만으로 판단함 — 로컬 테스트(5,000건, 3회)에서 P2P 이벤트가 약 750~930회(이전 작업 약 1,000~1,240건) 발생하는 것을 확인함

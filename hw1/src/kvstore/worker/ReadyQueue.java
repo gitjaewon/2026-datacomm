@@ -3,6 +3,7 @@ package kvstore.worker;
 import kvstore.common.Constants;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -16,12 +17,19 @@ public class ReadyQueue {
 
     private final LinkedList<Task> queue = new LinkedList<>();
 
-    /** 큐에 넣는다. 이미 꽉 찼으면(10개) false를 반환 -> 호출한 쪽에서 FAIL 처리해야 한다. */
+    /**
+     * 큐에 넣는다. 이미 꽉 찼으면(10개) false를 반환 -> 호출한 쪽에서 거절 처리해야 한다.
+     * 재할당 작업은 최우선 처리되도록 맨 앞에, 일반 작업은 맨 뒤에 넣는다.
+     */
     public synchronized boolean offer(Task task) {
         if (queue.size() >= Constants.QUEUE_MAX) {
             return false;
         }
-        queue.addLast(task);
+        if (task.isRetry) {
+            queue.addFirst(task);
+        } else {
+            queue.addLast(task);
+        }
         return true;
     }
 
@@ -37,11 +45,17 @@ public class ReadyQueue {
     /**
      * P2P 부하 분산을 위해 큐 "뒤쪽(가장 늦게 처리될 예정인)" 작업 몇 개를 꺼내온다.
      * 뒤쪽 작업을 넘기는 이유: 앞쪽(곧 처리될) 작업까지 넘기면 오히려 지연이 더 생길 수 있어서다.
+     * 재할당 작업은 넘기면 받는 쪽에서 최우선 처리가 풀리므로 이전 대상에서 뺀다.
      */
     public synchronized List<Task> pollFromTail(int count) {
         List<Task> result = new ArrayList<>();
-        for (int i = 0; i < count && !queue.isEmpty(); i++) {
-            result.add(queue.removeLast());
+        Iterator<Task> it = queue.descendingIterator();
+        while (result.size() < count && it.hasNext()) {
+            Task task = it.next();
+            if (!task.isRetry) {
+                it.remove();
+                result.add(task);
+            }
         }
         return result;
     }
