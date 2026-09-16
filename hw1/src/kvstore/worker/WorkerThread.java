@@ -75,13 +75,15 @@ public class WorkerThread extends Thread {
             connectToMaster();
             startP2PServer();
 
-            long lastP2PCheckNanos = System.nanoTime();
-            long nextP2PIntervalNanos = randomP2PIntervalNanos();
+            double lastP2PCheckClock = clock.get();
+            double nextP2PIntervalSec = randomP2PIntervalSeconds();
 
             while (!shutdownRequested) {
-                // 1) Master로부터 온 메시지 처리 (TASK / SHUTDOWN)
-                Message fromMaster = inboxFromMaster.poll();
-                if (fromMaster != null) {
+                // 1) Master로부터 온 메시지 전부 처리 (TASK / SHUTDOWN)
+                // 1개만 꺼내면 "받자마자 바로 처리"되어 큐가 절대 쌓이지 못하므로,
+                // 그 순간 inbox에 밀려있는 메시지를 전부 비운다 (처리는 여전히 2)에서 1개씩만).
+                Message fromMaster;
+                while ((fromMaster = inboxFromMaster.poll()) != null) {
                     handleMasterMessage(fromMaster);
                 }
 
@@ -92,10 +94,14 @@ public class WorkerThread extends Thread {
                 }
 
                 // 3) 주기적으로 P2P 부하 분산 체크 (과제 명세: "1~3초 랜덤 주기로 반복 점검")
-                if (System.nanoTime() - lastP2PCheckNanos > nextP2PIntervalNanos) {
+                // System Clock 규칙(모든 시뮬레이션 시간은 가상 시계 기준, 실시간 대기 없음)에 맞춰
+                // 진짜 벽시계(System.nanoTime())가 아니라 이 Worker 자신의 VirtualClock 누적값을 기준으로
+                // 점검 주기를 판단한다. (실시간 기준이면 프로그램이 실제로는 몇 초 만에 끝나버려서,
+                // 점검 자체가 거의 실행될 기회가 없어짐)
+                if (clock.get() - lastP2PCheckClock >= nextP2PIntervalSec) {
                     checkAndOffloadIfOverloaded();
-                    lastP2PCheckNanos = System.nanoTime();
-                    nextP2PIntervalNanos = randomP2PIntervalNanos();
+                    lastP2PCheckClock = clock.get();
+                    nextP2PIntervalSec = randomP2PIntervalSeconds();
                 }
 
                 // CPU를 100% 쓰는 busy-wait을 피하기 위한 아주 짧은 sleep.
@@ -110,18 +116,26 @@ public class WorkerThread extends Thread {
         }
     }
 
-    /** P2P 부하 체크 주기: 1~3초 사이 랜덤 (과제 명세 0-4 요구사항). */
-    private long randomP2PIntervalNanos() {
+    /** P2P 부하 체크 주기: 1~3초 사이 랜덤 (과제 명세 0-4 요구사항). VirtualClock 기준(가상 초). */
+    private double randomP2PIntervalSeconds() {
         int seconds = Constants.P2P_CHECK_INTERVAL_MIN
                 + random.nextInt(Constants.P2P_CHECK_INTERVAL_MAX - Constants.P2P_CHECK_INTERVAL_MIN + 1);
-        return seconds * 1_000_000_000L;
+        return seconds;
     }
 
     private void connectToMaster() throws IOException {
         Socket socket = new Socket(masterHost, masterPort);
         masterLink = new MasterLink(socket, inboxFromMaster);
+
+        // Master는 accept() 순서로만 워커를 구분하므로, 접속 직후 내가 어떤 workerId인지
+        // 먼저 알려줘야 한다. (안 그러면 accept 순서가 뒤섞일 때 Master.txt의 WorkerN과
+        // 실제 WorkerN.txt가 서로 다른 물리 스레드를 가리키게 된다)
+        Message register = new Message("REGISTER");
+        register.set("workerId", String.valueOf(workerId));
+        masterLink.send(register);
+
         masterLink.start();
-        log.log(clock.advance(0.5 + workerId * 0.01), "CONNECT", "SUCCESS",
+        log.log(clock.advance(0.01), "CONNECT", "SUCCESS",
                 "Connected to Master. Ready Queue initialized (0/10).");
     }
 
@@ -355,7 +369,7 @@ public class WorkerThread extends Thread {
         stats.set("clock", String.valueOf(sendClock));
         masterLink.send(stats);
 
-        log.log(clock.advance(0.05), "TERMINATE", "SUCCESS",
+        log.log(clock.get(), "TERMINATE", "SUCCESS",
                 "Worker" + workerId + " gracefully disconnected from Master.");
         log.close();
 
