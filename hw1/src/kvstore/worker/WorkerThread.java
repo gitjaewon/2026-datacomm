@@ -131,7 +131,7 @@ public class WorkerThread extends Thread {
         masterLink.send(register);
 
         masterLink.start();
-        log.log(clock.advance(0.5 + workerId * 0.01), "CONNECT", "SUCCESS",
+        log.log(clock.advance(0.01), "CONNECT", "SUCCESS",
                 "Connected to Master. Ready Queue initialized (0/10).");
     }
 
