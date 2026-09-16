@@ -152,6 +152,8 @@ public class Master {
                     registered++;
                 } catch (Exception e) {
                     // REGISTER 타임아웃, 파싱 실패 등 -> 이 연결은 버리고 계속 accept (Worker 카운트 X)
+                    System.err.println("[acceptWorkers] 연결 거부/등록 실패: " + e);
+                    e.printStackTrace();
                     if (socket != null) {
                         try {
                             socket.close();
