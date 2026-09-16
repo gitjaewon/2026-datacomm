@@ -209,12 +209,18 @@ public class Master {
         }
     }
 
+    // 4-1 Master.txt 예시("Progress: 320 / 5000 KV pairs stored (6.4%)")를 재현하기 위한
+    // 진행률 로그 주기. 채점 필수 지표는 아니지만(3장 참고), 동적 분배가 실제로 진행되고
+    // 있음을 로그·시연 영상에서 보여주기 위해 완료 개수가 이 배수에 도달할 때마다 남긴다.
+    private static final int PROGRESS_LOG_INTERVAL = 500;
+
     /** ClientHandler가 RESULT 메시지를 받으면 호출하는 콜백. */
     public synchronized void onWorkerResult(int workerId, String key, String status) {
         if ("SUCCESS".equals(status)) {
             kvStore.markSuccess(key);
             log.log(clock.get(), "RESULT", "SUCCESS",
                     "KV[" + key + "] stored by Worker" + workerId + ". value=" + kvStore.valueOf(key));
+            logProgressIfNeeded();
         } else {
             kvStore.requeueAsPriority(key);
             int n = reassignCount.incrementAndGet();
@@ -230,6 +236,17 @@ public class Master {
                 msg.getDouble("avgWait", 0), msg.getInt("p2pSent"), msg.getInt("p2pReceived"),
                 msg.getDouble("totalTime", 0)));
         statsReceived.countDown();
+    }
+
+    private void logProgressIfNeeded() {
+        int done = kvStore.doneCount();
+        if (done % PROGRESS_LOG_INTERVAL == 0) {
+            double t = clock.get();
+            double percent = (done * 100.0) / Constants.TOTAL_KV_PAIRS;
+            log.log(t, "DISTRIB", "INFO", String.format(
+                    "Progress: %d / %d KV pairs stored (%.1f%%)", done, Constants.TOTAL_KV_PAIRS, percent));
+            log.log(t, "DISTRIB", "INFO", scheduler.describeQueues());
+        }
     }
 
     public void onWorkerDisconnected(int workerId) {
