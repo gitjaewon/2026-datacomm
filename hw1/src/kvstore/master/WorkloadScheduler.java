@@ -60,11 +60,17 @@ public class WorkloadScheduler {
         return sb.toString();
     }
 
-    /** 큐가 가장 여유로운 Worker의 id를 반환. 전부 가득 찼으면 -1. */
-    public int pickWorkerForDispatch() {
+    /**
+     * 큐가 가장 여유로운 Worker의 id를 반환. 보낼 수 있는 Worker가 없으면 -1.
+     * excludeWorkerId는 후보에서 뺀다 (-1이면 제외 없음). 재할당 시 실패시킨 Worker를 빼는 데 쓴다.
+     */
+    public int pickWorkerForDispatch(int excludeWorkerId) {
         int bestWorker = -1;
         int bestSize = Integer.MAX_VALUE;
         for (Map.Entry<Integer, Integer> e : queueSizes.entrySet()) {
+            if (e.getKey() == excludeWorkerId) {
+                continue;
+            }
             int size = e.getValue();
             if (size < Constants.QUEUE_MAX && size < bestSize) {
                 bestSize = size;
