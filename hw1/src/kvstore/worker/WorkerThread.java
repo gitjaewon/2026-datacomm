@@ -79,9 +79,11 @@ public class WorkerThread extends Thread {
             long nextP2PIntervalNanos = randomP2PIntervalNanos();
 
             while (!shutdownRequested) {
-                // 1) Master로부터 온 메시지 처리 (TASK / SHUTDOWN)
-                Message fromMaster = inboxFromMaster.poll();
-                if (fromMaster != null) {
+                // 1) Master로부터 온 메시지 전부 처리 (TASK / SHUTDOWN)
+                // 1개만 꺼내면 "받자마자 바로 처리"되어 큐가 절대 쌓이지 못하므로,
+                // 그 순간 inbox에 밀려있는 메시지를 전부 비운다 (처리는 여전히 2)에서 1개씩만).
+                Message fromMaster;
+                while ((fromMaster = inboxFromMaster.poll()) != null) {
                     handleMasterMessage(fromMaster);
                 }
 
@@ -120,6 +122,14 @@ public class WorkerThread extends Thread {
     private void connectToMaster() throws IOException {
         Socket socket = new Socket(masterHost, masterPort);
         masterLink = new MasterLink(socket, inboxFromMaster);
+
+        // Master는 accept() 순서로만 워커를 구분하므로, 접속 직후 내가 어떤 workerId인지
+        // 먼저 알려줘야 한다. (안 그러면 accept 순서가 뒤섞일 때 Master.txt의 WorkerN과
+        // 실제 WorkerN.txt가 서로 다른 물리 스레드를 가리키게 된다)
+        Message register = new Message("REGISTER");
+        register.set("workerId", String.valueOf(workerId));
+        masterLink.send(register);
+
         masterLink.start();
         log.log(clock.advance(0.5 + workerId * 0.01), "CONNECT", "SUCCESS",
                 "Connected to Master. Ready Queue initialized (0/10).");

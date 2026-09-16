@@ -4,7 +4,6 @@ import kvstore.common.Message;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
 
@@ -26,10 +25,15 @@ public class ClientHandler extends Thread {
     private final BufferedReader in;
     private final PrintWriter out;
 
-    public ClientHandler(int workerId, Socket socket, Master master) throws IOException {
+    /**
+     * @param in REGISTER 메시지를 이미 읽은 BufferedReader를 그대로 넘겨받는다.
+     *           (같은 소켓 스트림을 새 BufferedReader로 다시 감싸면 내부 버퍼에 남아있던
+     *            데이터가 유실될 수 있어서, 반드시 같은 인스턴스를 재사용해야 한다)
+     */
+    public ClientHandler(int workerId, Socket socket, BufferedReader in, Master master) throws IOException {
         this.workerId = workerId;
         this.master = master;
-        this.in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        this.in = in;
         this.out = new PrintWriter(socket.getOutputStream(), true);
         setName("ClientHandler-Worker" + workerId);
     }
