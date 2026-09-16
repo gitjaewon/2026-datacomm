@@ -365,7 +365,7 @@ public class WorkerThread extends Thread {
         stats.set("clock", String.valueOf(sendClock));
         masterLink.send(stats);
 
-        log.log(clock.advance(0.05), "TERMINATE", "SUCCESS",
+        log.log(clock.get(), "TERMINATE", "SUCCESS",
                 "Worker" + workerId + " gracefully disconnected from Master.");
         log.close();
 
