@@ -98,7 +98,7 @@ public class Master {
         log.log(clock.get(), "INIT", "INFO",
                 "Generating 5,000 KV pairs... Key=hex4(unique), Value=rand(1~100)");
         kvStore.generateAll();
-        log.log(clock.advance(0.02), "INIT", "SUCCESS",
+        log.log(clock.get(), "INIT", "SUCCESS",
                 "5,000 KV pairs generated. Waiting for Worker connections.");
 
         acceptWorkers(port);
@@ -278,7 +278,7 @@ public class Master {
             log.log(finalT, "KVSTORE", "INFO", e.getKey() + "=" + e.getValue());
         }
 
-        log.log(clock.advance(0.05), "TERMINATE", "SUCCESS", "Graceful shutdown. All workers disconnected.");
+        log.log(finalT, "TERMINATE", "SUCCESS", "Graceful shutdown. All workers disconnected.");
         log.close();
     }
 }
