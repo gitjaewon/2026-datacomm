@@ -5,7 +5,9 @@ import kvstore.common.FileLogger;
 import kvstore.common.Message;
 import kvstore.common.VirtualClock;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Map;
@@ -37,7 +39,6 @@ public class Master {
     private final FileLogger log = new FileLogger("Master.txt", "MASTER");
 
     private final Map<Integer, ClientHandler> workers = new ConcurrentHashMap<>();
-    private final AtomicInteger nextWorkerId = new AtomicInteger(1);
     private final CountDownLatch allWorkersConnected = new CountDownLatch(Constants.NUM_WORKERS);
 
     // 3장 성능 평가 지표: 장애로 인해 다른 Worker에 재할당된 횟수 (FAIL -> requeue 시에만 카운트,
@@ -117,10 +118,16 @@ public class Master {
             for (int i = 0; i < Constants.NUM_WORKERS; i++) {
                 try {
                     Socket socket = serverSocket.accept();
-                    int workerId = nextWorkerId.getAndIncrement();
+
+                    // accept() 순서는 OS 스케줄링에 따라 스레드 시작 순서와 다를 수 있어서,
+                    // Worker가 접속 직후 보내는 REGISTER 메시지로 "진짜" workerId를 받아야
+                    // Master.txt의 WorkerN과 실제 WorkerN.txt가 같은 물리 스레드를 가리킨다.
+                    BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    Message register = Message.parse(in.readLine());
+                    int workerId = register.getInt("workerId");
                     scheduler.registerWorker(workerId);
 
-                    ClientHandler handler = new ClientHandler(workerId, socket, this);
+                    ClientHandler handler = new ClientHandler(workerId, socket, in, this);
                     workers.put(workerId, handler);
                     handler.start();
 
