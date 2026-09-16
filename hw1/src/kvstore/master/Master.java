@@ -115,16 +115,31 @@ public class Master {
     private void acceptWorkers(int port) throws IOException {
         ServerSocket serverSocket = new ServerSocket(port);
         Thread acceptThread = new Thread(() -> {
-            for (int i = 0; i < Constants.NUM_WORKERS; i++) {
+            int registered = 0;
+            while (registered < Constants.NUM_WORKERS) {
+                Socket socket = null;
                 try {
-                    Socket socket = serverSocket.accept();
+                    socket = serverSocket.accept();
+
+                    // AWS 등 공인 IP에 포트를 열어두면 포트 스캐너/헬스체크 같은 엉뚱한 접속이
+                    // 먼저 들어올 수 있다. REGISTER를 안 보내는 연결에서 무한정 readLine()으로
+                    // 블로킹되면 진짜 Worker 4개가 나중에 접속해도 영원히 처리되지 않으므로,
+                    // 짧은 타임아웃을 걸어서 REGISTER를 안 보내는 연결은 버리고 계속 accept한다.
+                    socket.setSoTimeout(5000);
 
                     // accept() 순서는 OS 스케줄링에 따라 스레드 시작 순서와 다를 수 있어서,
                     // Worker가 접속 직후 보내는 REGISTER 메시지로 "진짜" workerId를 받아야
                     // Master.txt의 WorkerN과 실제 WorkerN.txt가 같은 물리 스레드를 가리킨다.
                     BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                    Message register = Message.parse(in.readLine());
+                    String line = in.readLine();
+                    Message register = (line == null) ? null : Message.parse(line);
+                    if (register == null || !"REGISTER".equals(register.getType())) {
+                        socket.close();
+                        continue; // 진짜 Worker가 아니므로 카운트하지 않고 다음 접속을 계속 받는다.
+                    }
                     int workerId = register.getInt("workerId");
+                    socket.setSoTimeout(0); // 등록 완료 -> 평상시처럼 무제한 대기로 복귀
+
                     scheduler.registerWorker(workerId);
 
                     ClientHandler handler = new ClientHandler(workerId, socket, in, this);
@@ -134,8 +149,15 @@ public class Master {
                     log.log(clock.advance(0.01), "CONNECT", "SUCCESS",
                             "Worker" + workerId + " connected. Ready Queue initialized (0/10).");
                     allWorkersConnected.countDown();
-                } catch (IOException e) {
-                    e.printStackTrace();
+                    registered++;
+                } catch (Exception e) {
+                    // REGISTER 타임아웃, 파싱 실패 등 -> 이 연결은 버리고 계속 accept (Worker 카운트 X)
+                    if (socket != null) {
+                        try {
+                            socket.close();
+                        } catch (IOException ignored) {
+                        }
+                    }
                 }
             }
             // 필요한 4개를 다 받았으니 더 이상 새 접속을 받지 않는다.
