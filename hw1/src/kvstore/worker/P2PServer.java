@@ -78,7 +78,9 @@ public class P2PServer extends Thread {
                 out.println(res.toLine());
 
             } else if ("P2P_TRANSFER".equals(req.getType())) {
-                // 상대 Worker가 작업 몇 개를 나에게 떠넘김 -> 내 큐에 최대한 담고, 담은 개수만큼 ACK.
+                // 상대 Worker가 작업 몇 개를 나에게 떠넘김 -> 앞에서부터 담다가 하나라도 못 담으면 멈추고,
+                // 담은 개수만큼 ACK. 보낸 쪽은 "앞에서부터 ACK 개수만큼 받아졌다"고 보고 나머지를
+                // 되돌리므로, 중간에 건너뛰고 뒤의 작업을 받으면 작업 유실/중복이 생긴다.
                 String[] keys = req.get("keys").split(";");
                 String[] values = req.get("values").split(";");
                 int accepted = 0;
@@ -87,6 +89,8 @@ public class P2PServer extends Thread {
                             false, true, clock.get()));
                     if (ok) {
                         accepted++;
+                    } else {
+                        break;
                     }
                 }
                 p2pReceivedCounter.addAndGet(accepted);

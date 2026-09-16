@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -44,6 +46,8 @@ public class Master {
     // 3장 성능 평가 지표: 장애로 인해 다른 Worker에 재할당된 횟수 (FAIL -> requeue 시에만 카운트,
     // 큐가 가득 차서 잠시 대기시키는 경우는 "장애"가 아니므로 카운트하지 않는다)
     private final AtomicInteger reassignCount = new AtomicInteger(0);
+    // Worker 큐가 가득 차서 거절된 횟수 (장애가 아니므로 reassignCount와 따로 센다)
+    private final AtomicInteger queueRejectCount = new AtomicInteger(0);
 
     // Worker가 종료 직전에 STATS 메시지로 보고하는 최종 통계 (Master.txt 최종 STAT에 노드별로 함께 기록하기 위함)
     private final Map<Integer, WorkerFinalStat> workerFinalStats = new ConcurrentHashMap<>();
@@ -51,17 +55,21 @@ public class Master {
 
     /** Worker가 보고한 종료 시점 통계 한 벌 (Worker STATS 메시지 필드 그대로). */
     private static class WorkerFinalStat {
-        final int received, success, fail, p2pSent, p2pReceived;
+        final int received, success, fail, p2pSent, p2pReceived, p2pEvents, retryReceived, rejected;
         final double avgWait, totalTime;
 
         WorkerFinalStat(int received, int success, int fail, double avgWait,
-                         int p2pSent, int p2pReceived, double totalTime) {
+                         int p2pSent, int p2pReceived, int p2pEvents,
+                         int retryReceived, int rejected, double totalTime) {
             this.received = received;
             this.success = success;
             this.fail = fail;
             this.avgWait = avgWait;
             this.p2pSent = p2pSent;
             this.p2pReceived = p2pReceived;
+            this.p2pEvents = p2pEvents;
+            this.retryReceived = retryReceived;
+            this.rejected = rejected;
             this.totalTime = totalTime;
         }
     }
@@ -174,14 +182,13 @@ public class Master {
     /**
      * 핵심 동적 분배 루프.
      *
-     * TODO(학습 포인트): 지금은 "보낼 작업이 있으면 WorkloadScheduler가 골라준 최소 큐 Worker에게
-     * 계속 보낸다"는 단순 구조다. 실제 채점 포인트는 WorkloadScheduler.pickWorkerForDispatch()의
-     * 알고리즘이니, 필요하면 그 쪽을 고도화하면 된다 (이 메서드 자체는 크게 안 건드려도 된다).
+     * 재할당 대기 작업을 먼저 꺼내 큐가 가장 여유로운 Worker에게 보낸다.
+     * 재할당 작업은 직전에 실패시킨 Worker를 제외하고 고르며, TASK에 retry=true로 표시해 보낸다.
      */
     private void runDispatchLoop() throws InterruptedException {
         while (!kvStore.isAllDone()) {
-            String key = kvStore.nextPendingKey();
-            if (key == null) {
+            KVStore.PendingKey pending = kvStore.nextPendingKey();
+            if (pending == null) {
                 // 아직 결과를 기다리는 중이라 지금 당장 보낼 새 작업이 없다.
                 // 아래 sleep은 "실시간 처리 지연 시뮬레이션"이 아니라, 그냥 CPU를 100% 쓰는
                 // busy-wait을 피하기 위한 것 뿐이다 (System Clock에는 영향 없음).
@@ -189,23 +196,34 @@ public class Master {
                 continue;
             }
 
-            int workerId = scheduler.pickWorkerForDispatch();
+            int excludeWorkerId = pending.isRetry ? kvStore.lastFailedWorkerOf(pending.key) : -1;
+
+            int workerId = scheduler.pickWorkerForDispatch(excludeWorkerId);
             if (workerId == -1) {
-                // 모든 Worker 큐가 가득 찼다 -> 이 key는 최우선 큐로 돌려놓고 잠시 대기.
-                kvStore.requeueAsPriority(key);
+                // 보낼 수 있는 Worker가 없다 (전부 가득 찼거나, 제외한 Worker만 여유가 있음)
+                // -> 원래 있던 큐로 돌려놓고 잠시 대기.
+                kvStore.returnUndispatched(pending);
                 Thread.sleep(20);
                 continue;
             }
 
             ClientHandler handler = workers.get(workerId);
-            int value = kvStore.valueOf(key);
+            int value = kvStore.valueOf(pending.key);
 
             // 통신 지연 1초를 "가상"으로 반영 (실제로 1초 기다리지 않는다)
             double t = clock.advance(Constants.NETWORK_DELAY);
-            handler.sendTask(key, value, false, t);
+            // 전송 전에 기록해야, Worker가 곧바로 거절 응답을 보내도 원래 큐를 알 수 있다.
+            kvStore.markDispatched(pending);
+            handler.sendTask(pending.key, value, pending.isRetry, t);
             scheduler.onDispatchedOptimistically(workerId);
 
-            log.log(t, "DISTRIB", "INFO", "Dispatching KV[" + key + "] -> Worker" + workerId);
+            if (pending.isRetry) {
+                String excluded = (excludeWorkerId == -1) ? "" : " (excluded Worker" + excludeWorkerId + ")";
+                log.log(t, "DISTRIB", "WARN", "KV[" + pending.key + "] priority requeue. Reassigning to Worker"
+                        + workerId + excluded + ".");
+            } else {
+                log.log(t, "DISTRIB", "INFO", "Dispatching KV[" + pending.key + "] -> Worker" + workerId);
+            }
         }
     }
 
@@ -221,8 +239,14 @@ public class Master {
             log.log(clock.get(), "RESULT", "SUCCESS",
                     "KV[" + key + "] stored by Worker" + workerId + ". value=" + kvStore.valueOf(key));
             logProgressIfNeeded();
+        } else if ("REJECTED".equals(status)) {
+            // 큐 초과로 거절됨 -> 장애 재할당 횟수에 넣지 않고 원래 큐로 되돌린다.
+            kvStore.requeueAfterReject(key);
+            int n = queueRejectCount.incrementAndGet();
+            log.log(clock.get(), "DISTRIB", "WARN",
+                    "KV[" + key + "] rejected by Worker" + workerId + " (queue overflow). Requeued (#" + n + ").");
         } else {
-            kvStore.requeueAsPriority(key);
+            kvStore.requeueAfterFail(key, workerId);
             int n = reassignCount.incrementAndGet();
             log.log(clock.get(), "RESULT", "FAIL",
                     "KV[" + key + "] FAILED by Worker" + workerId + " (20% rule). Requeued for reassignment (#" + n + ").");
@@ -234,6 +258,7 @@ public class Master {
         workerFinalStats.put(workerId, new WorkerFinalStat(
                 msg.getInt("received"), msg.getInt("success"), msg.getInt("fail"),
                 msg.getDouble("avgWait", 0), msg.getInt("p2pSent"), msg.getInt("p2pReceived"),
+                msg.getInt("p2pEvents"), msg.getInt("retryReceived"), msg.getInt("rejected"),
                 msg.getDouble("totalTime", 0)));
         statsReceived.countDown();
     }
@@ -269,24 +294,46 @@ public class Master {
 
         double finalT = clock.get();
 
-        log.log(finalT, "STAT", "INFO", "=== FINAL STATISTICS ===");
-        log.log(finalT, "STAT", "INFO", "Total KV pairs processed     : " + kvStore.doneCount() + " / " + Constants.TOTAL_KV_PAIRS);
-        log.log(finalT, "STAT", "INFO", "Total execution time         : " + finalT + " sec");
-        log.log(finalT, "STAT", "INFO", "Total FAIL->reassign events  : " + reassignCount.get());
-
-        int totalP2PEvents = 0;
+        // Worker별 통계를 먼저 합산해서 요약 -> Worker별 순서로 기록한다.
+        int sumSuccess = 0, sumFail = 0, sumP2PTasks = 0, sumP2PEvents = 0, sumRetry = 0, sumRejected = 0;
+        List<String> perWorkerLines = new ArrayList<>();
+        List<Integer> missingStats = new ArrayList<>();
         for (int workerId = 1; workerId <= Constants.NUM_WORKERS; workerId++) {
             WorkerFinalStat s = workerFinalStats.get(workerId);
             if (s == null) {
-                log.log(finalT, "STAT", "WARN", "Worker" + workerId + " - no STATS report received before shutdown.");
+                missingStats.add(workerId);
                 continue;
             }
-            totalP2PEvents += s.p2pSent;
-            log.log(finalT, "STAT", "INFO", String.format(
-                    "Worker%d - received=%d success=%d fail=%d avgWaitTime=%.2fs p2pSent=%d p2pReceived=%d totalTime=%.2fs",
-                    workerId, s.received, s.success, s.fail, s.avgWait, s.p2pSent, s.p2pReceived, s.totalTime));
+            sumSuccess += s.success;
+            sumFail += s.fail;
+            sumP2PTasks += s.p2pSent;
+            sumP2PEvents += s.p2pEvents;
+            sumRetry += s.retryReceived;
+            sumRejected += s.rejected;
+            perWorkerLines.add(String.format(
+                    "Worker%d - processed=%d success=%d fail=%d retryReceived=%d rejected=%d "
+                            + "avgWait=%.2fs p2pEvents=%d p2pSent=%d p2pReceived=%d totalTime=%.2fs",
+                    workerId, s.received, s.success, s.fail, s.retryReceived, s.rejected,
+                    s.avgWait, s.p2pEvents, s.p2pSent, s.p2pReceived, s.totalTime));
         }
-        log.log(finalT, "STAT", "INFO", "Total P2P load-balance events : " + totalP2PEvents);
+
+        log.log(finalT, "STAT", "INFO", "=== FINAL STATISTICS ===");
+        log.log(finalT, "STAT", "INFO", "Total KV pairs processed     : " + kvStore.doneCount() + " / " + Constants.TOTAL_KV_PAIRS);
+        log.log(finalT, "STAT", "INFO", "Total SUCCESS                : " + sumSuccess);
+        log.log(finalT, "STAT", "INFO", "Total FAIL (then retried)    : " + sumFail);
+        log.log(finalT, "STAT", "INFO", "Fault reassignments          : " + reassignCount.get() + " 건");
+        log.log(finalT, "STAT", "INFO", "Priority tasks re-dispatched : " + sumRetry + " 건");
+        log.log(finalT, "STAT", "INFO", "Queue overflow rejects       : " + queueRejectCount.get() + " 건 (worker report: " + sumRejected + ")");
+        log.log(finalT, "STAT", "INFO", "P2P load balance events      : " + sumP2PEvents + " 회");
+        log.log(finalT, "STAT", "INFO", "P2P tasks transferred        : " + sumP2PTasks + " 건");
+        log.log(finalT, "STAT", "INFO", String.format("Total execution time         : %.2f sec", finalT));
+        log.log(finalT, "STAT", "INFO", "--- Per-Worker Stats ---");
+        for (String line : perWorkerLines) {
+            log.log(finalT, "STAT", "INFO", "  " + line);
+        }
+        for (int workerId : missingStats) {
+            log.log(finalT, "STAT", "WARN", "Worker" + workerId + " - no STATS report received before shutdown.");
+        }
 
         // 과제 1장 필수 요구사항: 완료된 KV 저장소 전체(5,000쌍)를 최종 로그에 남긴다.
         Map<String, Integer> finalStore = kvStore.snapshotStore();
