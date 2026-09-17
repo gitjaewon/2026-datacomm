@@ -17,8 +17,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Worker Node 1개 = Thread 1개.
- * "필수 구현 조건: 모든 Worker Node는 독립적인 Thread를 통해 구현되어야 함"을 만족시키는 클래스.
+ * Worker Node 1개 = Thread 1개로 구현한 클래스.
  *
  * 설계 요약:
  *  - 소켓에서 데이터를 "읽는" blocking 작업은 MasterLink / P2PServer라는 보조 Thread에 맡긴다.
@@ -34,7 +33,7 @@ public class WorkerThread extends Thread {
     private final int masterPort;
     private final int myP2PPort;
     private final int[] peerP2PPorts; // 다른 Worker들의 P2P 포트 목록 (나 자신은 제외)
-    private final String peerHost;    // 이번 과제 기본 가정: 모든 Worker가 같은 PC(localhost)에서 실행
+    private final String peerHost;    // 기본 가정: 모든 Worker가 같은 PC(localhost)에서 실행
 
     private final ReadyQueue readyQueue = new ReadyQueue();
     private final VirtualClock clock = new VirtualClock();
@@ -46,7 +45,7 @@ public class WorkerThread extends Thread {
     private P2PServer p2pServer;
     private volatile boolean shutdownRequested = false;
 
-    // 3장 성능 평가 지표를 위한 누적 통계
+    // 성능 통계를 위한 누적 값
     private int totalReceived = 0;
     private int totalSuccess = 0;
     private int totalFail = 0;
@@ -96,9 +95,9 @@ public class WorkerThread extends Thread {
                     processTask(task);
                 }
 
-                // 3) 주기적으로 P2P 부하 분산 체크 (과제 명세: "1~3초 랜덤 주기로 반복 점검")
-                // System Clock 규칙(모든 시뮬레이션 시간은 가상 시계 기준, 실시간 대기 없음)에 맞춰
-                // 진짜 벽시계(System.nanoTime())가 아니라 이 Worker 자신의 VirtualClock 누적값을 기준으로
+                // 3) 주기적으로 P2P 부하 분산 체크 (1~3초 랜덤 주기로 반복 점검)
+                // 모든 시뮬레이션 시간은 가상 시계 기준이라, 진짜 벽시계(System.nanoTime())가
+                // 아니라 이 Worker 자신의 VirtualClock 누적값을 기준으로
                 // 점검 주기를 판단한다. (실시간 기준이면 프로그램이 실제로는 몇 초 만에 끝나버려서,
                 // 점검 자체가 거의 실행될 기회가 없어짐)
                 if (clock.get() - lastP2PCheckClock >= nextP2PIntervalSec) {
@@ -119,7 +118,7 @@ public class WorkerThread extends Thread {
         }
     }
 
-    /** P2P 부하 체크 주기: 1~3초 사이 랜덤 (과제 명세 0-4 요구사항). VirtualClock 기준(가상 초). */
+    /** P2P 부하 체크 주기: 1~3초 사이 랜덤. VirtualClock 기준(가상 초). */
     private double randomP2PIntervalSeconds() {
         int seconds = Constants.P2P_CHECK_INTERVAL_MIN
                 + random.nextInt(Constants.P2P_CHECK_INTERVAL_MAX - Constants.P2P_CHECK_INTERVAL_MIN + 1);
@@ -166,9 +165,9 @@ public class WorkerThread extends Thread {
                             "Received task: KV[" + key + "] (Value=" + value + ")");
                 }
 
-                boolean accepted = readyQueue.offer(new Task(key, value, isRetry, false, clock.get()));
+                boolean accepted = readyQueue.offer(new Task(key, value, isRetry, clock.get()));
                 if (!accepted) {
-                    // 큐 초과 -> 즉시 FAIL 처리 후 Master에 통지 (과제 0-1: 10개 초과는 즉시 FAIL)
+                    // 큐 초과 -> 즉시 FAIL 처리 후 Master에 통지 (10개 초과는 즉시 FAIL)
                     // Master가 20% 처리 실패와 구분해서 셀 수 있도록 결과는 REJECTED로 보낸다.
                     queueRejected++;
                     log.log(clock.get(), "QUEUE", "WARN", "Queue full (10/10). New task request rejected.");
@@ -217,7 +216,7 @@ public class WorkerThread extends Thread {
     }
 
     private void sendResult(String key, String status) {
-        // 모든 노드 간 통신은 1초 지연을 가상으로 반영 (과제 명세: "네트워크 지연은 1초로 고정 시뮬레이션")
+        // 모든 노드 간 통신은 1초 지연을 가상으로 반영 (네트워크 지연 1초 고정 시뮬레이션)
         double t = clock.advance(Constants.NETWORK_DELAY);
         Message msg = new Message("RESULT");
         msg.set("key", key);
@@ -233,7 +232,7 @@ public class WorkerThread extends Thread {
         masterLink.send(msg);
     }
 
-    /** 과제 0-1 표: 큐가 70%(=7/10)를 초과한 상태에서 작업이 들고날 때마다 매번 WARN을 남긴다. */
+    /** 큐가 70%(=7/10)를 초과한 상태에서 작업이 들고날 때마다 매번 WARN을 남긴다. */
     private void logQueueWarnIfNeeded() {
         int size = readyQueue.size();
         if (size > Constants.QUEUE_MAX * Constants.QUEUE_WARN_RATIO) {
@@ -242,18 +241,13 @@ public class WorkerThread extends Thread {
     }
 
     /**
-     * P2P 부하 분산 판단부 (0-4 P2P 부하 분산 동작 예시에 대응).
+     * P2P 부하 분산 판단부.
      *
-     * ===== 지금 구현되어 있는 알고리즘 (기본 예시) =====
+     * ===== 알고리즘 =====
      *   1) 내 큐 크기 * 평균 처리시간(2초) = 예상 대기시간을 계산한다.
      *   2) 예상 대기시간이 임계값(15초)을 넘으면, peer들을 순서대로 조회해서
      *      나보다 큐가 더 적은 첫 번째 peer를 찾는다.
      *   3) 그 peer에게 (내 큐 크기 - peer 큐 크기)/2 만큼 작업을 넘긴다.
-     *
-     * ===== TODO (채점 포인트 / 학습 포인트) =====
-     *   위 알고리즘은 예시일 뿐이다. 예를 들어 "가장 여유로운 peer를 찾기", "한 번에 넘기는 개수를
-     *   다르게 계산하기", "여러 peer에 나눠서 넘기기" 등으로 바꿔도 된다.
-     *   단, Readme.txt에 어떤 알고리즘을 썼는지 + 장단점을 반드시 작성해야 한다 (필수 제출 항목).
      */
     private void checkAndOffloadIfOverloaded() {
         int mySize = readyQueue.size();
@@ -275,7 +269,7 @@ public class WorkerThread extends Thread {
                     // 뒤쪽이 전부 재할당 작업이라 넘길 게 없음 -> 이 peer는 건너뛰고 다음 peer 시도.
                     continue;
                 }
-                // 과제 0-1: 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
+                // 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
                 // 여기선 작업이 큐에서 빠져나가는(P2P로 이전되는) 이벤트이므로 나간 직후 체크한다.
                 logQueueWarnIfNeeded();
 
