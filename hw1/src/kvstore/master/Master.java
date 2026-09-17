@@ -21,8 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Master Node.
  *
- * ※ 필수 구현 조건: 이 프로그램은 반드시 AWS/GCP 등 "물리적 외부 서버"에서 실행되어야 한다
- *    (로컬 PC에서 돌리면 0점 처리 대상이니 주의!).
+ * AWS/GCP 등 물리적 외부 서버에서 실행하는 것을 전제로 한다.
  *
  * 실행 예) java kvstore.master.Master 5000
  *
@@ -43,7 +42,7 @@ public class Master {
     private final Map<Integer, ClientHandler> workers = new ConcurrentHashMap<>();
     private final CountDownLatch allWorkersConnected = new CountDownLatch(Constants.NUM_WORKERS);
 
-    // 3장 성능 평가 지표: 장애로 인해 다른 Worker에 재할당된 횟수 (FAIL -> requeue 시에만 카운트,
+    // 장애로 인해 다른 Worker에 재할당된 횟수 (FAIL -> requeue 시에만 카운트,
     // 큐가 가득 차서 잠시 대기시키는 경우는 "장애"가 아니므로 카운트하지 않는다)
     private final AtomicInteger reassignCount = new AtomicInteger(0);
     // Worker 큐가 가득 차서 거절된 횟수 (장애가 아니므로 reassignCount와 따로 센다)
@@ -84,8 +83,7 @@ public class Master {
 
     /**
      * Worker가 QUEUE 메시지로 자기 큐 크기를 보고해올 때마다 호출됨.
-     * 강의자료 4장(로깅) 예시 로그: "[9.00] MASTER | DISTRIB | WARN | Worker1 queue full (10/10). Pausing dispatch."
-     * 를 그대로 재현하기 위해, 큐가 최대치(10)에 도달한 순간을 여기서 감지해서 남긴다.
+     * 큐가 최대치(10)에 도달한 순간을 여기서 감지해서 WARN 로그를 남긴다.
      */
     public void onWorkerQueueUpdate(int workerId, int size) {
         scheduler.updateQueueSize(workerId, size);
@@ -227,9 +225,8 @@ public class Master {
         }
     }
 
-    // 4-1 Master.txt 예시("Progress: 320 / 5000 KV pairs stored (6.4%)")를 재현하기 위한
-    // 진행률 로그 주기. 채점 필수 지표는 아니지만(3장 참고), 동적 분배가 실제로 진행되고
-    // 있음을 로그·시연 영상에서 보여주기 위해 완료 개수가 이 배수에 도달할 때마다 남긴다.
+    // 진행률 로그 주기. 동적 분배가 실제로 진행되고 있음을 로그에서 보여주기 위해
+    // 완료 개수가 이 배수에 도달할 때마다 남긴다.
     private static final int PROGRESS_LOG_INTERVAL = 500;
 
     /** ClientHandler가 RESULT 메시지를 받으면 호출하는 콜백. */
@@ -317,7 +314,7 @@ public class Master {
                     s.avgWait, s.p2pEvents, s.p2pSent, s.p2pReceived, s.totalTime));
         }
 
-        // 과제 1장 필수 요구사항: 완료된 KV 저장소 전체(5,000쌍)를 최종 로그에 남긴다.
+        // 완료된 KV 저장소 전체(5,000쌍)를 최종 로그에 남긴다.
         // STAT 요약보다 먼저 찍어서, 로그 파일 맨 끝은 한눈에 보기 좋은 통계 요약 + TERMINATE로 끝나게 한다.
         Map<String, Integer> finalStore = kvStore.snapshotStore();
         log.log(finalT, "KVSTORE", "INFO", "=== FINAL KV STORE DUMP (" + finalStore.size() + " pairs) ===");

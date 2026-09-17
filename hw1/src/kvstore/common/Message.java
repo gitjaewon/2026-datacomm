@@ -11,10 +11,10 @@ import java.util.Map;
  *
  * ※ 헷갈리지 않게 구분할 것:
  *   - 이 Message의 TYPE(TASK, RESULT, QUEUE, P2P_QUERY ...)은 "소켓으로 주고받는 네트워크 프로토콜" 용어.
- *   - 4장 로그 형식에 나오는 EVENT(INIT, DISTRIB, RECV, PROC ...)는 "로그 파일에 남기는" 용어.
+ *   - 로그 형식에 나오는 EVENT(INIT, DISTRIB, RECV, PROC ...)는 "로그 파일에 남기는" 용어.
  *   서로 관련은 있지만 다른 목적의 값이라 이름이 겹치지 않게 설계했다.
  *
- * 사용 중인 메시지 타입 목록 (필요하면 자유롭게 추가/변경 가능):
+ * 사용 중인 메시지 타입 목록:
  *   [Master -> Worker]
  *     TASK      : key, value, retry(true/false), clock
  *                 (retry=true면 실패 후 재할당된 작업. Worker는 큐 맨 앞에 넣는다)

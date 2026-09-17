@@ -1,12 +1,12 @@
 package kvstore.common;
 
 /**
- * 과제 명세서(HW1description)에 나온 숫자들을 한 곳에 모아둔 상수 모음.
+ * 시뮬레이션에 쓰이는 숫자들을 한 곳에 모아둔 상수 모음.
  * 나중에 값이 바뀌더라도 여기 한 군데만 고치면 되도록 하기 위함.
  */
 public class Constants {
 
-    // 0장: 생성할 (Key, Value) 쌍 개수와 Value 범위
+    // 생성할 (Key, Value) 쌍 개수와 Value 범위
     public static final int TOTAL_KV_PAIRS = 5000;
     public static final int VALUE_MIN = 1;
     public static final int VALUE_MAX = 100;

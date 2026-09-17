@@ -86,7 +86,7 @@ public class P2PServer extends Thread {
                 int accepted = 0;
                 for (int i = 0; i < keys.length; i++) {
                     boolean ok = readyQueue.offer(new Task(keys[i], Integer.parseInt(values[i]),
-                            false, true, clock.get()));
+                            false, clock.get()));
                     if (ok) {
                         accepted++;
                     } else {
@@ -109,7 +109,7 @@ public class P2PServer extends Thread {
         }
     }
 
-    /** 과제 0-1 표의 요구사항: 큐가 70%를 초과한 상태에서 작업이 들고날 때마다 WARN을 기록. */
+    /** 큐가 70%를 초과한 상태에서 작업이 들고날 때마다 WARN을 기록. */
     private void logQueueWarnIfNeeded() {
         int size = readyQueue.size();
         if (size > Constants.QUEUE_MAX * Constants.QUEUE_WARN_RATIO) {
