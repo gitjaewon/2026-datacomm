@@ -61,15 +61,12 @@ public class ClientHandler extends Thread {
                         master.onWorkerStats(workerId, msg);
                         break;
                     default:
-                        // TODO: 필요하면 다른 메시지 타입도 여기서 처리하면 된다.
                         break;
                 }
             }
         } catch (IOException e) {
-            // 소켓이 끊어짐 (Worker 프로세스 종료 등)
-            // TODO(심화/선택): Worker 자체가 죽는 상황까지 고려한다면, 여기서
-            //   그 Worker가 들고 있던 미완료 작업을 다른 Worker에게 재분배하는 로직을 추가할 수 있다.
-            //   (지금은 개별 작업 단위 20% 실패 재시도만 필수 요구사항이라, 이 부분은 선택 구현이다)
+            // 소켓이 끊어짐 (Worker 프로세스 종료 등). 그 Worker가 들고 있던 미완료 작업까지
+            // 다른 Worker로 재분배하지는 않고, 개별 작업 단위의 20% 실패 재시도만 지원한다.
         } finally {
             master.onWorkerDisconnected(workerId);
         }

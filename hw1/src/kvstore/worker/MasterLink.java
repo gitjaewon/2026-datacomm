@@ -20,7 +20,7 @@ import java.util.concurrent.BlockingQueue;
  *    따로 두고, 실제 판단(큐에 넣을지, 몇 초 후 처리할지 등)은 WorkerThread.run()이 전담한다.
  *
  * 즉 이 클래스는 로직 판단을 전혀 하지 않는 순수 I/O 담당이고,
- * "Worker Node = 독립적인 Thread" 라는 요구사항을 만족시키는 진짜 주체는 WorkerThread다.
+ * "Worker Node = 독립적인 Thread"의 실제 주체는 WorkerThread다.
  */
 public class MasterLink extends Thread {
 

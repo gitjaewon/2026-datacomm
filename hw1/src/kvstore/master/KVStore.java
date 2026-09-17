@@ -131,10 +131,7 @@ public class KVStore {
         return store.size() >= Constants.TOTAL_KV_PAIRS;
     }
 
-    /**
-     * 최종 출력용: 완료된 KV 저장소 전체를 key 정렬된 스냅샷으로 반환.
-     * (과제 명세 1장: "전체 처리 완료 시 KV 저장소 전체(5,000쌍)... 로그에 기록")
-     */
+    /** 최종 출력용: 완료된 KV 저장소 전체를 key 정렬된 스냅샷으로 반환. */
     public synchronized Map<String, Integer> snapshotStore() {
         return new TreeMap<>(store);
     }
