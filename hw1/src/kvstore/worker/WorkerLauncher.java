@@ -7,13 +7,8 @@ import kvstore.common.Constants;
  *
  * 실행 예) java kvstore.worker.WorkerLauncher <MasterIP> <MasterPort>
  *
- * 이번 과제의 기본 가정: 4개의 Worker가 전부 이 PC(localhost) 안에서 Thread로 동작하고,
+ * 기본 가정: 4개의 Worker가 전부 이 PC(localhost) 안에서 Thread로 동작하고,
  * P2P 통신도 localhost의 서로 다른 포트(6001~6004)로 주고받는다.
- *
- * TODO(심화/선택): 만약 조원마다 다른 PC에서 Worker를 나눠 실행하고 싶다면, peerHost를
- * "localhost" 대신 각 조원의 실제 IP로 바꾸는 설정(인자 or 설정파일)을 추가로 구현하면 된다.
- * 과제 명세에는 4개 Worker를 반드시 여러 PC에 나눠야 한다는 조건은 없으므로, 한 PC에서
- * 4개 Thread로 실행하는 지금 구조로도 충분히 요구사항을 만족한다.
  */
 public class WorkerLauncher {
 
