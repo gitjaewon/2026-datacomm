@@ -129,9 +129,9 @@ public class WorkerThread extends Thread {
         Socket socket = new Socket(masterHost, masterPort);
         masterLink = new MasterLink(socket, inboxFromMaster);
 
-        // Master는 accept() 순서로만 워커를 구분하므로, 접속 직후 내가 어떤 workerId인지
-        // 먼저 알려줘야 한다. (안 그러면 accept 순서가 뒤섞일 때 Master.txt의 WorkerN과
-        // 실제 WorkerN.txt가 서로 다른 물리 스레드를 가리키게 된다)
+        // Master는 accept() 순서가 아니라 이 REGISTER 메시지로 워커를 구분하므로, 접속 직후
+        // 내가 어떤 workerId인지 먼저 알려줘야 한다. (accept 순서로 번호를 매기면 Master.txt의
+        // WorkerN과 실제 WorkerN.txt가 서로 다른 물리 스레드를 가리킬 수 있다)
         Message register = new Message("REGISTER");
         register.set("workerId", String.valueOf(workerId));
         masterLink.send(register);
@@ -235,10 +235,25 @@ public class WorkerThread extends Thread {
 
     /** 큐가 70%(=7/10)를 초과한 상태에서 작업이 들고날 때마다 매번 WARN을 남긴다. */
     private void logQueueWarnIfNeeded() {
-        int size = readyQueue.size();
+        logQueueWarnIfNeeded(readyQueue.size());
+    }
+
+    private void logQueueWarnIfNeeded(int size) {
         if (size > Constants.QUEUE_MAX * Constants.QUEUE_WARN_RATIO) {
             log.log(clock.get(), "QUEUE", "WARN", "Queue over 70% (" + size + "/10).");
         }
+    }
+
+    /** 로그용: 작업 목록을 "KV[a3f7], KV[0b12]" 형태로 나열한다. */
+    private static String describeKeys(List<Task> tasks) {
+        StringBuilder sb = new StringBuilder();
+        for (Task t : tasks) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append("KV[").append(t.key).append("]");
+        }
+        return sb.toString();
     }
 
     /**
@@ -271,9 +286,13 @@ public class WorkerThread extends Thread {
                     continue;
                 }
                 // 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
-                // 여기선 작업이 큐에서 빠져나가는(P2P로 이전되는) 이벤트이므로 나간 직후 체크한다.
-                logQueueWarnIfNeeded();
+                // 여러 개를 한 번에 뺐으므로, 한 개씩 빠져나간 직후의 크기마다 체크한다.
+                int afterRemoval = readyQueue.size();
+                for (int i = toMove.size() - 1; i >= 0; i--) {
+                    logQueueWarnIfNeeded(afterRemoval + i);
+                }
 
+                int peerId = peerPort - (myP2PPort - workerId); // P2P 포트 = 기준 포트 + workerId
                 int acked = transferTasksToPeer(peerPort, toMove);
                 p2pSent.addAndGet(acked);
                 if (acked > 0) {
@@ -289,15 +308,19 @@ public class WorkerThread extends Thread {
                 if (acked < toMove.size()) {
                     for (int i = acked; i < toMove.size(); i++) {
                         readyQueue.offer(toMove.get(i));
+                        logQueueWarnIfNeeded(); // 되돌아와서 다시 들어온 이벤트 (한 개마다)
                     }
-                    logQueueWarnIfNeeded(); // 되돌아와서 다시 들고난 이벤트
                     log.log(clock.get(), "LB", "WARN",
-                            (toMove.size() - acked) + " tasks rejected by peer (race condition), returned to my queue.");
+                            (toMove.size() - acked) + " tasks rejected by Worker" + peerId
+                                    + " (race condition), returned to my queue: "
+                                    + describeKeys(toMove.subList(acked, toMove.size())));
                 }
                 reportQueueSize();
 
                 log.log(clock.get(), "LB", "SUCCESS",
-                        acked + " tasks transferred via P2P. Queue: " + mySize + "/10 -> " + readyQueue.size() + "/10");
+                        acked + " tasks transferred via P2P to Worker" + peerId + ": "
+                                + describeKeys(toMove.subList(0, acked))
+                                + ". Queue: " + mySize + "/10 -> " + readyQueue.size() + "/10");
                 return; // 이번 주기엔 한 peer에게만 이전
             }
         }
@@ -345,6 +368,7 @@ public class WorkerThread extends Thread {
             // P2P 작업 이전도 노드 간 통신이므로 1초 지연을 가상으로 반영.
             double t = clock.advance(Constants.NETWORK_DELAY);
             Message transfer = new Message("P2P_TRANSFER");
+            transfer.set("fromId", String.valueOf(workerId));
             transfer.set("keys", keys.toString());
             transfer.set("values", values.toString());
             transfer.set("clock", String.valueOf(t));
