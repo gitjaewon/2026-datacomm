@@ -31,7 +31,7 @@ import java.util.Map;
  *   [Worker <-> Worker, P2P]
  *     P2P_QUERY   : fromId, clock
  *     P2P_STATUS  : size, clock           (P2P_QUERY에 대한 응답)
- *     P2P_TRANSFER: keys(세미콜론 구분), values(세미콜론 구분), clock
+ *     P2P_TRANSFER: fromId, keys(세미콜론 구분), values(세미콜론 구분), clock
  *     P2P_ACK     : count, clock          (P2P_TRANSFER에 대한 응답. 앞에서부터 받은 작업 수)
  */
 public class Message {

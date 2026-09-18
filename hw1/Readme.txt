@@ -58,9 +58,9 @@ Worker (1개 프로세스 = WorkerLauncher, 로컬 PC에서 실행,
 
 [공통] 컴파일 (Master 서버, Worker PC 양쪽 모두 각자 실행)
   * Linux / macOS / Git Bash:
-      javac -d out $(find src -name "*.java")
+      javac -encoding UTF-8 -d out $(find src -name "*.java")
   * Windows PowerShell:
-      javac -d out (Get-ChildItem -Recurse -Filter *.java src |
+      javac -encoding UTF-8 -d out (Get-ChildItem -Recurse -Filter *.java src |
         Select-Object -ExpandProperty FullName)
 
 [Master 서버(AWS)] 실행
