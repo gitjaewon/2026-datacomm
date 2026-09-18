@@ -276,7 +276,7 @@ public class Master {
     }
 
     private void shutdownAll() {
-        double t = clock.get();
+        double t = clock.advance(Constants.NETWORK_DELAY);
         for (ClientHandler h : workers.values()) {
             h.sendShutdown(t);
         }
@@ -308,7 +308,7 @@ public class Master {
             sumRetry += s.retryReceived;
             sumRejected += s.rejected;
             perWorkerLines.add(String.format(
-                    "Worker%d - processed=%d success=%d fail=%d retryReceived=%d rejected=%d "
+                    "Worker%d - received=%d success=%d fail=%d retryReceived=%d rejected=%d "
                             + "avgWait=%.2fs p2pEvents=%d p2pSent=%d p2pReceived=%d totalTime=%.2fs",
                     workerId, s.received, s.success, s.fail, s.retryReceived, s.rejected,
                     s.avgWait, s.p2pEvents, s.p2pSent, s.p2pReceived, s.totalTime));

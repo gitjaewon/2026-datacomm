@@ -74,7 +74,7 @@ public class P2PServer extends Thread {
                 // 상대 Worker가 "네 큐 크기가 몇이야?" 라고 물어봄 -> 바로 답해준다.
                 Message res = new Message("P2P_STATUS");
                 res.set("size", String.valueOf(readyQueue.size()));
-                res.set("clock", String.valueOf(clock.get()));
+                res.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
                 out.println(res.toLine());
 
             } else if ("P2P_TRANSFER".equals(req.getType())) {
@@ -84,24 +84,30 @@ public class P2PServer extends Thread {
                 String[] keys = req.get("keys").split(";");
                 String[] values = req.get("values").split(";");
                 int accepted = 0;
+                StringBuilder acceptedKeys = new StringBuilder();
                 for (int i = 0; i < keys.length; i++) {
                     boolean ok = readyQueue.offer(new Task(keys[i], Integer.parseInt(values[i]),
                             false, clock.get()));
                     if (ok) {
                         accepted++;
+                        if (acceptedKeys.length() > 0) {
+                            acceptedKeys.append(", ");
+                        }
+                        acceptedKeys.append("KV[").append(keys[i]).append("]");
+                        logQueueWarnIfNeeded(); // 작업이 한 개 들어올 때마다 체크
                     } else {
                         break;
                     }
                 }
                 p2pReceivedCounter.addAndGet(accepted);
-                logQueueWarnIfNeeded();
 
                 log.log(clock.get(), "LB", "SUCCESS",
-                        "Received " + accepted + " tasks via P2P. Queue: " + readyQueue.size() + "/10");
+                        "Received " + accepted + " tasks via P2P from Worker" + req.get("fromId") + ": "
+                                + acceptedKeys + ". Queue: " + readyQueue.size() + "/10");
 
                 Message ack = new Message("P2P_ACK");
                 ack.set("count", String.valueOf(accepted));
-                ack.set("clock", String.valueOf(clock.get()));
+                ack.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
                 out.println(ack.toLine());
             }
         } catch (Exception e) {
