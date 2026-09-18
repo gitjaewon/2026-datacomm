@@ -276,7 +276,7 @@ public class Master {
     }
 
     private void shutdownAll() {
-        double t = clock.get();
+        double t = clock.advance(Constants.NETWORK_DELAY);
         for (ClientHandler h : workers.values()) {
             h.sendShutdown(t);
         }

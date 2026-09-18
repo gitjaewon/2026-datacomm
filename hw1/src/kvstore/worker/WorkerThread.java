@@ -226,9 +226,10 @@ public class WorkerThread extends Thread {
     }
 
     private void reportQueueSize() {
+        double t = clock.advance(Constants.NETWORK_DELAY);
         Message msg = new Message("QUEUE");
         msg.set("size", String.valueOf(readyQueue.size()));
-        msg.set("clock", String.valueOf(clock.get()));
+        msg.set("clock", String.valueOf(t));
         masterLink.send(msg);
     }
 
@@ -310,7 +311,7 @@ public class WorkerThread extends Thread {
 
             Message query = new Message("P2P_QUERY");
             query.set("fromId", String.valueOf(workerId));
-            query.set("clock", String.valueOf(clock.get()));
+            query.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
             out.println(query.toLine());
 
             Message res = Message.parse(in.readLine());
