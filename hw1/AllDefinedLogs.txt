@@ -98,9 +98,12 @@ QUEUE (WARN)
 LB (SUCCESS, WARN)
   - P2P 부하 분산(Load Balancing) 관련 이벤트
   - SUCCESS : 내 작업을 다른 Worker에게 이전 성공, 또는 다른
-              Worker로부터 작업을 이전받았을 때
+              Worker로부터 작업을 이전받았을 때. 상대 Worker와 이전된
+              작업의 key 목록을 함께 기록
+              (예: "2 tasks transferred via P2P to Worker3: KV[a3f7], KV[0b12]. Queue: 9/10 -> 7/10")
+              (예: "Received 2 tasks via P2P from Worker1: KV[a3f7], KV[0b12]. Queue: 5/10")
   - WARN    : peer가 이전 요청을 다 받아주지 못해(레이스 컨디션)
-              일부 작업이 내 큐로 롤백됐을 때
+              일부 작업이 내 큐로 롤백됐을 때. 롤백된 key 목록을 함께 기록
 
 STAT (INFO)
   - Worker 종료 직전, 자신의 최종 통계를 기록

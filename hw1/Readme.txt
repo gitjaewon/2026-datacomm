@@ -58,9 +58,9 @@ Worker (1개 프로세스 = WorkerLauncher, 로컬 PC에서 실행,
 
 [공통] 컴파일 (Master 서버, Worker PC 양쪽 모두 각자 실행)
   * Linux / macOS / Git Bash:
-      javac -d out $(find src -name "*.java")
+      javac -encoding UTF-8 -d out $(find src -name "*.java")
   * Windows PowerShell:
-      javac -d out (Get-ChildItem -Recurse -Filter *.java src |
+      javac -encoding UTF-8 -d out (Get-ChildItem -Recurse -Filter *.java src |
         Select-Object -ExpandProperty FullName)
 
 [Master 서버(AWS)] 실행
@@ -92,7 +92,7 @@ Worker (1개 프로세스 = WorkerLauncher, 로컬 PC에서 실행,
 5. 동적 작업 분배 알고리즘 설명 (WorkloadScheduler.java)
 --------------------------------------------------------------------
 
-[알고리즘] Least Queue First (최소 큐 우선)
+사용한 알고리즘: Least Queue First (최소 큐 우선)
 
 Master가 각 Worker의 큐 크기를 계속 추적하다가(Worker의 QUEUE 보고 +
 작업 전송 직후 낙관적 +1), 매번 "추적된 큐 크기가 가장 작은 Worker"에게
@@ -101,17 +101,17 @@ Master가 각 Worker의 큐 크기를 계속 추적하다가(Worker의 QUEUE 보
 priorityQueue를 pendingQueue보다 먼저 소비하고 직전에 그 작업을
 실패시킨 Worker는 후보에서 제외한다.
 
-[장점] 구현이 단순하고, 실시간 큐 상태를 반영해 4개 Worker의 부하가
+장점: 구현이 단순하고, 실시간 큐 상태를 반영해 4개 Worker의 부하가
 고르게 유지됨
-[단점] Worker의 실제 처리 속도는 고려하지 않고 대기 개수만 봄, 분배
-판단이 Master 한 곳에 집중돼 있어 Worker 수가 늘어나면 병목이 되고
-Master 장애 시 전체 분배가 멈추는 단일 장애점(SPOF)이 됨
+아쉬운 점: Worker의 실제 처리 속도는 고려하지 않고 대기 개수만 봄.
+그리고 분배 판단을 Master 혼자 다 하다 보니, Worker가 더 늘어나면
+Master가 병목이 될 수 있고 Master가 죽으면 분배 자체가 멈춤
 
 --------------------------------------------------------------------
 6. P2P 부하 분산 알고리즘 설명 (WorkerThread.java)
 --------------------------------------------------------------------
 
-[알고리즘] 첫 번째로 발견한 여유 Peer에게 절반 이전
+사용한 알고리즘: 처음 찾은 여유 Peer에게 절반씩 넘기기
 
 1) 내 큐 크기 x 평균 처리시간(2초)으로 예상 대기시간을 계산, 15초를
    넘으면(큐 8개 이상) 부하분산 트리거
@@ -123,11 +123,9 @@ Master 장애 시 전체 분배가 멈추는 단일 장애점(SPOF)이 됨
 5) peer는 받은 만큼만 ACK로 확인해주고, 보낸 쪽은 ACK 개수 이후
    작업을 내 큐로 롤백 -> 유실·중복 없음
 
-[장점] Master 개입 없이 Worker끼리 자율 처리, 큐 뒤쪽부터 이전해
-지연 최소화
-[단점] 각 Worker가 자기 주변 peer 정보만으로 판단해 전역 최적 분산은
-아니고(첫 매칭 방식), 질의와 실제 전송이 별도 왕복이라 그 사이 상태가
-바뀌면 전송이 일부 실패해 조회 비용이 낭비됨(유실은 없지만 비효율)
+장점: Master 개입 없이 Worker끼리 자율적으로 처리함
+아쉬운 점: 제일 처음 만난 여유 peer한테 넘기는 방식이라 전체적으로
+최적의 분배는 아님
 
 --------------------------------------------------------------------
 7. 장애 처리(Fault Tolerance) 메커니즘 설명
@@ -151,24 +149,14 @@ KVStore의 priorityQueue(최우선 큐)에 등록하면서 실패시킨 Worker�
 이 작업을 원래 있던 큐로 되돌리고, 장애 재할당 횟수(reassignCount)와
 따로 큐 초과 거절 횟수(queueRejectCount)로 센다.
 
-[장점] 성공 확률 80%라 평균 1.25회 만에 성공, 기존 분배 큐를
-재사용해서 구현이 단순함
-[단점] 이론상 같은 작업이 여러 번 연속 실패할 수 있음(최대 재시도
-제한 없음), 재할당 작업이 끼어드는 만큼 일반 작업 대기시간이 늘어남,
-특정 Worker가 계속 실패해도 그 작업 하나에서만 직전 Worker로 제외될
-뿐 시스템 차원에서 격리(circuit breaker)하지는 않아 문제 있는 Worker
-에게도 계속 새 작업이 배정됨
+장점: 성공 확률이 80%라 몇 번 안에 대부분 성공하고, 구현도 단순함
+아쉬운 점: 최대 재시도 횟수 제한이 없어서 이론상 계속 실패할 수도 있음
 
 --------------------------------------------------------------------
 8. 추가 구현 사항 및 기타 언급할 내용
 --------------------------------------------------------------------
 
-- REGISTER 핸드셰이크 : 접속 순서만으로 workerId를 매기면 로그 번호와
-  실제 Worker가 어긋날 수 있어, 접속 직후 자기 workerId를 알려주는
-  메시지를 추가함
-- 비정상 접속 방어 : 접속 후 5초 안에 REGISTER가 안 오면 그 연결만
-  버림 (AWS 공인 IP 특성상 포트 스캐너 등 방어)
-- 통계 구분 : 장애 재할당 수 / 큐 초과 거절 수 / P2P 이전 횟수·건수를
-  각각 따로 집계해 Master·Worker STAT 로그에 남김
-- VirtualClock : Master/Worker가 다른 프로세스라 시계 공유 불가 ->
-  메시지마다 clock 값을 실어 보내고 더 큰 값을 채택(Lamport 방식)
+- 접속 직후 REGISTER 메시지로 자기 workerId를 Master에 알림
+- 접속 후 5초 안에 REGISTER가 안 오면 그 연결은 끊음
+- 장애 재할당 수 / 큐 초과 거절 수 / P2P 이전 횟수를 따로 집계해서 기록
+- VirtualClock은 메시지 보낼 때마다 clock 값을 같이 보내서 서로 맞춤
