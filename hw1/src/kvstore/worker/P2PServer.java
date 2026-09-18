@@ -74,7 +74,7 @@ public class P2PServer extends Thread {
                 // 상대 Worker가 "네 큐 크기가 몇이야?" 라고 물어봄 -> 바로 답해준다.
                 Message res = new Message("P2P_STATUS");
                 res.set("size", String.valueOf(readyQueue.size()));
-                res.set("clock", String.valueOf(clock.get()));
+                res.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
                 out.println(res.toLine());
 
             } else if ("P2P_TRANSFER".equals(req.getType())) {
@@ -101,7 +101,7 @@ public class P2PServer extends Thread {
 
                 Message ack = new Message("P2P_ACK");
                 ack.set("count", String.valueOf(accepted));
-                ack.set("clock", String.valueOf(clock.get()));
+                ack.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
                 out.println(ack.toLine());
             }
         } catch (Exception e) {
