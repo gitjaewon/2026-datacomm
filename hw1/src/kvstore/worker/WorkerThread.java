@@ -90,8 +90,13 @@ public class WorkerThread extends Thread {
                 }
 
                 // 2) 큐에 있는 작업 하나 처리
+                // poll()로 실제 큐 크기는 이 시점에 바로 줄어들므로, Master에도 처리가 끝나기를
+                // 기다리지 않고 즉시 새 큐 크기를 보고한다 (처리 완료 후 보고하면 1~3초 동안
+                // Master가 실제보다 큐가 더 찬 것으로 오판해 분배가 밀릴 수 있다).
                 Task task = readyQueue.poll();
                 if (task != null) {
+                    logQueueWarnIfNeeded();
+                    reportQueueSize();
                     processTask(task);
                 }
 
@@ -142,7 +147,7 @@ public class WorkerThread extends Thread {
     }
 
     private void startP2PServer() {
-        p2pServer = new P2PServer(myP2PPort, readyQueue, log, clock, p2pReceived);
+        p2pServer = new P2PServer(myP2PPort, readyQueue, log, clock, p2pReceived, masterLink);
         p2pServer.start();
     }
 
@@ -152,27 +157,29 @@ public class WorkerThread extends Thread {
         switch (msg.getType()) {
             case "TASK": {
                 String key = msg.get("key");
+                int index = msg.getInt("index");
                 int value = msg.getInt("value");
                 boolean isRetry = Boolean.parseBoolean(msg.get("retry"));
                 totalReceived++;
 
+                String label = Task.label(index, key);
                 if (isRetry) {
                     retryReceived++;
                     log.log(clock.get(), "RECV", "INFO",
-                            "Received PRIORITY task (reassigned): KV[" + key + "] (Value=" + value + ")");
+                            "Received PRIORITY task (reassigned): " + label + " (Value=" + value + ")");
                 } else {
                     log.log(clock.get(), "RECV", "INFO",
-                            "Received task: KV[" + key + "] (Value=" + value + ")");
+                            "Received task: " + label + " (Value=" + value + ")");
                 }
 
-                boolean accepted = readyQueue.offer(new Task(key, value, isRetry, clock.get()));
+                boolean accepted = readyQueue.offer(new Task(key, index, value, isRetry, clock.get()));
                 if (!accepted) {
                     // 큐 초과 -> 즉시 FAIL 처리 후 Master에 통지 (10개 초과는 즉시 FAIL)
                     // Master가 20% 처리 실패와 구분해서 셀 수 있도록 결과는 REJECTED로 보낸다.
                     queueRejected++;
                     log.log(clock.get(), "QUEUE", "WARN", "Queue full (10/10). New task request rejected.");
                     log.log(clock.get(), "RECV", "FAIL",
-                            "KV[" + key + "] rejected - queue overflow (10/10). Master notified.");
+                            label + " rejected - queue overflow (10/10). Master notified.");
                     sendResult(key, "REJECTED");
                 } else {
                     logQueueWarnIfNeeded();
@@ -196,23 +203,22 @@ public class WorkerThread extends Thread {
         totalWaitTime += (startClock - task.enqueueClock);
         waitSampleCount++;
 
+        String label = Task.label(task.index, task.key);
         double t = clock.advance(procTime);
-        log.log(startClock, "PROC", "INFO", "Processing " + (task.isRetry ? "retry " : "") + "KV[" + task.key
-                + "]... estimated time=" + procTime + "s" + (task.isRetry ? " (priority queue)" : ""));
+        log.log(startClock, "PROC", "INFO", "Processing " + (task.isRetry ? "retry " : "") + label
+                + "... estimated time=" + procTime + "s" + (task.isRetry ? " (priority queue)" : ""));
 
         boolean success = random.nextDouble() < Constants.SUCCESS_RATE; // 80% 성공 / 20% 실패
         if (success) {
             totalSuccess++;
-            log.log(t, "PROC", "SUCCESS", "KV[" + task.key + "] stored"
+            log.log(t, "PROC", "SUCCESS", label + " stored"
                     + (task.isRetry ? " on retry" : "") + ". time=" + procTime + "s");
             sendResult(task.key, "SUCCESS");
         } else {
             totalFail++;
-            log.log(t, "PROC", "FAIL", "KV[" + task.key + "] FAILED (20% rule). Sending FAIL to Master.");
+            log.log(t, "PROC", "FAIL", label + " FAILED (20% rule). Sending FAIL to Master.");
             sendResult(task.key, "FAIL");
         }
-        logQueueWarnIfNeeded();
-        reportQueueSize();
     }
 
     private void sendResult(String key, String status) {
@@ -251,7 +257,7 @@ public class WorkerThread extends Thread {
             if (sb.length() > 0) {
                 sb.append(", ");
             }
-            sb.append("KV[").append(t.key).append("]");
+            sb.append(Task.label(t.index, t.key));
         }
         return sb.toString();
     }
@@ -355,13 +361,16 @@ public class WorkerThread extends Thread {
              BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
 
             StringBuilder keys = new StringBuilder();
+            StringBuilder indexes = new StringBuilder();
             StringBuilder values = new StringBuilder();
             for (Task t : tasks) {
                 if (keys.length() > 0) {
                     keys.append(";");
+                    indexes.append(";");
                     values.append(";");
                 }
                 keys.append(t.key);
+                indexes.append(t.index);
                 values.append(t.value);
             }
 
@@ -370,6 +379,7 @@ public class WorkerThread extends Thread {
             Message transfer = new Message("P2P_TRANSFER");
             transfer.set("fromId", String.valueOf(workerId));
             transfer.set("keys", keys.toString());
+            transfer.set("indexes", indexes.toString());
             transfer.set("values", values.toString());
             transfer.set("clock", String.valueOf(t));
             out.println(transfer.toLine());
