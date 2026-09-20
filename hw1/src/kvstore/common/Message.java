@@ -16,7 +16,7 @@ import java.util.Map;
  *
  * 사용 중인 메시지 타입 목록:
  *   [Master -> Worker]
- *     TASK      : key, value, retry(true/false), clock
+ *     TASK      : key, index(1~5000 순번 ID), value, retry(true/false), clock
  *                 (retry=true면 실패 후 재할당된 작업. Worker는 큐 맨 앞에 넣는다)
  *     SHUTDOWN  : clock
  *   [Worker -> Master]
@@ -31,7 +31,7 @@ import java.util.Map;
  *   [Worker <-> Worker, P2P]
  *     P2P_QUERY   : fromId, clock
  *     P2P_STATUS  : size, clock           (P2P_QUERY에 대한 응답)
- *     P2P_TRANSFER: fromId, keys(세미콜론 구분), values(세미콜론 구분), clock
+ *     P2P_TRANSFER: fromId, keys(세미콜론 구분), indexes(세미콜론 구분), values(세미콜론 구분), clock
  *     P2P_ACK     : count, clock          (P2P_TRANSFER에 대한 응답. 앞에서부터 받은 작업 수)
  */
 public class Message {

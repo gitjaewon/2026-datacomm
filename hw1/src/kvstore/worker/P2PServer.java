@@ -30,17 +30,19 @@ public class P2PServer extends Thread {
     private final FileLogger log;
     private final VirtualClock clock;
     private final AtomicInteger p2pReceivedCounter; // WorkerThread와 공유하는 통계 카운터
+    private final MasterLink masterLink; // P2P로 받은 직후 새 큐 크기를 Master에 바로 보고하기 위함
 
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
     public P2PServer(int port, ReadyQueue readyQueue, FileLogger log, VirtualClock clock,
-                      AtomicInteger p2pReceivedCounter) {
+                      AtomicInteger p2pReceivedCounter, MasterLink masterLink) {
         this.port = port;
         this.readyQueue = readyQueue;
         this.log = log;
         this.clock = clock;
         this.p2pReceivedCounter = p2pReceivedCounter;
+        this.masterLink = masterLink;
         setDaemon(true);
         setName("P2PServer-" + port);
     }
@@ -82,18 +84,19 @@ public class P2PServer extends Thread {
                 // 담은 개수만큼 ACK. 보낸 쪽은 "앞에서부터 ACK 개수만큼 받아졌다"고 보고 나머지를
                 // 되돌리므로, 중간에 건너뛰고 뒤의 작업을 받으면 작업 유실/중복이 생긴다.
                 String[] keys = req.get("keys").split(";");
+                String[] indexes = req.get("indexes").split(";");
                 String[] values = req.get("values").split(";");
                 int accepted = 0;
                 StringBuilder acceptedKeys = new StringBuilder();
                 for (int i = 0; i < keys.length; i++) {
-                    boolean ok = readyQueue.offer(new Task(keys[i], Integer.parseInt(values[i]),
-                            false, clock.get()));
+                    boolean ok = readyQueue.offer(new Task(keys[i], Integer.parseInt(indexes[i]),
+                            Integer.parseInt(values[i]), false, clock.get()));
                     if (ok) {
                         accepted++;
                         if (acceptedKeys.length() > 0) {
                             acceptedKeys.append(", ");
                         }
-                        acceptedKeys.append("KV[").append(keys[i]).append("]");
+                        acceptedKeys.append(Task.label(Integer.parseInt(indexes[i]), keys[i]));
                         logQueueWarnIfNeeded(); // 작업이 한 개 들어올 때마다 체크
                     } else {
                         break;
@@ -104,6 +107,15 @@ public class P2PServer extends Thread {
                 log.log(clock.get(), "LB", "SUCCESS",
                         "Received " + accepted + " tasks via P2P from Worker" + req.get("fromId") + ": "
                                 + acceptedKeys + ". Queue: " + readyQueue.size() + "/10");
+
+                // 큐가 늘어난 걸 다음 TASK/RESULT 보고 때까지 묵혀두면 Master가 여전히 한가하다고
+                // 착각해서 계속 일을 더 밀어넣을 수 있다. P2P로 받은 직후 바로 새 큐 크기를 보고한다.
+                if (accepted > 0) {
+                    Message queueMsg = new Message("QUEUE");
+                    queueMsg.set("size", String.valueOf(readyQueue.size()));
+                    queueMsg.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
+                    masterLink.send(queueMsg);
+                }
 
                 Message ack = new Message("P2P_ACK");
                 ack.set("count", String.valueOf(accepted));

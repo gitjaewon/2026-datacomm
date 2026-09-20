@@ -99,7 +99,7 @@ public class Master {
     }
 
     public void start(int port) throws Exception {
-        log.log(clock.get(), "INIT", "INFO", "System Clock started.");
+        log.log(clock.get(), "INIT", "SUCCESS", "System Clock started.");
 
         log.log(clock.get(), "INIT", "INFO",
                 "Generating 5,000 KV pairs... Key=hex4(unique), Value=rand(1~100)");
@@ -207,20 +207,22 @@ public class Master {
 
             ClientHandler handler = workers.get(workerId);
             int value = kvStore.valueOf(pending.key);
+            int index = kvStore.indexOf(pending.key);
 
             // 통신 지연 1초를 "가상"으로 반영 (실제로 1초 기다리지 않는다)
             double t = clock.advance(Constants.NETWORK_DELAY);
             // 전송 전에 기록해야, Worker가 곧바로 거절 응답을 보내도 원래 큐를 알 수 있다.
             kvStore.markDispatched(pending);
-            handler.sendTask(pending.key, value, pending.isRetry, t);
+            handler.sendTask(pending.key, index, value, pending.isRetry, t);
             scheduler.onDispatchedOptimistically(workerId);
 
+            String label = kvLabel(index, pending.key);
             if (pending.isRetry) {
                 String excluded = (excludeWorkerId == -1) ? "" : " (excluded Worker" + excludeWorkerId + ")";
-                log.log(t, "DISTRIB", "WARN", "KV[" + pending.key + "] priority requeue. Reassigning to Worker"
+                log.log(t, "DISTRIB", "SUCCESS", label + " reassigned to Worker"
                         + workerId + excluded + ".");
             } else {
-                log.log(t, "DISTRIB", "INFO", "Dispatching KV[" + pending.key + "] -> Worker" + workerId);
+                log.log(t, "DISTRIB", "INFO", "Dispatching " + label + " -> Worker" + workerId);
             }
         }
     }
@@ -229,24 +231,30 @@ public class Master {
     // 완료 개수가 이 배수에 도달할 때마다 남긴다.
     private static final int PROGRESS_LOG_INTERVAL = 500;
 
+    /** 로그 표기용: "KV[0001] (Key=a3f7)" 형태로 순번 인덱스와 hex key를 함께 보여준다. */
+    private static String kvLabel(int index, String key) {
+        return "KV[" + String.format("%04d", index) + "] (Key=" + key + ")";
+    }
+
     /** ClientHandler가 RESULT 메시지를 받으면 호출하는 콜백. */
     public synchronized void onWorkerResult(int workerId, String key, String status) {
+        String label = kvLabel(kvStore.indexOf(key), key);
         if ("SUCCESS".equals(status)) {
             kvStore.markSuccess(key);
             log.log(clock.get(), "RESULT", "SUCCESS",
-                    "KV[" + key + "] stored by Worker" + workerId + ". value=" + kvStore.valueOf(key));
+                    label + " stored by Worker" + workerId + ". value=" + kvStore.valueOf(key));
             logProgressIfNeeded();
         } else if ("REJECTED".equals(status)) {
             // 큐 초과로 거절됨 -> 장애 재할당 횟수에 넣지 않고 원래 큐로 되돌린다.
             kvStore.requeueAfterReject(key);
             int n = queueRejectCount.incrementAndGet();
             log.log(clock.get(), "DISTRIB", "WARN",
-                    "KV[" + key + "] rejected by Worker" + workerId + " (queue overflow). Requeued (#" + n + ").");
+                    label + " rejected by Worker" + workerId + " (queue overflow). Requeued (#" + n + ").");
         } else {
             kvStore.requeueAfterFail(key, workerId);
             int n = reassignCount.incrementAndGet();
             log.log(clock.get(), "RESULT", "FAIL",
-                    "KV[" + key + "] FAILED by Worker" + workerId + " (20% rule). Requeued for reassignment (#" + n + ").");
+                    label + " FAILED by Worker" + workerId + " (20% rule). Requeued for reassignment (#" + n + ").");
         }
     }
 
@@ -319,7 +327,8 @@ public class Master {
         Map<String, Integer> finalStore = kvStore.snapshotStore();
         log.log(finalT, "KVSTORE", "INFO", "=== FINAL KV STORE DUMP (" + finalStore.size() + " pairs) ===");
         for (Map.Entry<String, Integer> e : finalStore.entrySet()) {
-            log.log(finalT, "KVSTORE", "INFO", e.getKey() + "=" + e.getValue());
+            log.log(finalT, "KVSTORE", "INFO",
+                    kvLabel(kvStore.indexOf(e.getKey()), e.getKey()) + " = " + e.getValue());
         }
 
         log.log(finalT, "STAT", "INFO", "=== FINAL STATISTICS ===");
