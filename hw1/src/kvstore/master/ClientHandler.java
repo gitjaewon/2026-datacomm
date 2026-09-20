@@ -73,9 +73,10 @@ public class ClientHandler extends Thread {
     }
 
     /** Master의 Dispatcher(runDispatchLoop)가 호출: 이 Worker에게 작업을 하나 전송한다. */
-    public void sendTask(String key, int value, boolean isRetry, double clock) {
+    public void sendTask(String key, int index, int value, boolean isRetry, double clock) {
         Message msg = new Message("TASK");
         msg.set("key", key);
+        msg.set("index", String.valueOf(index));
         msg.set("value", String.valueOf(value));
         msg.set("retry", String.valueOf(isRetry));
         msg.set("clock", String.valueOf(clock));

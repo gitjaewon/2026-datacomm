@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public class KVStore {
 
     private final Map<String, Integer> allPairs = new HashMap<>();          // 전체 5000개 원본 (key -> value)
+    private final Map<String, Integer> keyToIndex = new HashMap<>();        // key -> 생성 순번(1~5000), 로그용 인덱스 ID
     private final Queue<String> pendingQueue = new ConcurrentLinkedQueue<>(); // 아직 분배 안 된 작업
     private final Queue<String> priorityQueue = new ConcurrentLinkedQueue<>(); // 실패 후 재시도 대기
     private final Map<String, Integer> store = new ConcurrentHashMap<>();     // 성공적으로 저장 완료된 결과
@@ -45,14 +46,19 @@ public class KVStore {
         }
     }
 
-    /** 시작 시 5,000개의 (Key, Value) 생성. Key는 unique 16진수 4자리, Value는 1~100 무작위 정수. */
+    /**
+     * 시작 시 5,000개의 (Key, Value) 생성. Key는 unique 16진수 4자리, Value는 1~100 무작위 정수.
+     * 각 key에는 생성 순서대로 1~5000의 순번 인덱스도 함께 부여한다 (로그에서 KV[0001]~KV[5000]로 표시).
+     */
     public synchronized void generateAll() {
         Set<String> usedKeys = new HashSet<>();
+        int index = 1;
         while (usedKeys.size() < Constants.TOTAL_KV_PAIRS) {
             String key = String.format("%04x", random.nextInt(0x10000)); // 예: a3f7
             if (usedKeys.add(key)) {
                 int value = Constants.VALUE_MIN + random.nextInt(Constants.VALUE_MAX - Constants.VALUE_MIN + 1);
                 allPairs.put(key, value);
+                keyToIndex.put(key, index++);
                 pendingQueue.add(key);
             }
         }
@@ -60,6 +66,11 @@ public class KVStore {
 
     public int valueOf(String key) {
         return allPairs.get(key);
+    }
+
+    /** 로그 표기용 순번 인덱스 (1~5000). */
+    public int indexOf(String key) {
+        return keyToIndex.get(key);
     }
 
     /**
