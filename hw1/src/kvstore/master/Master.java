@@ -316,9 +316,9 @@ public class Master {
             sumRetry += s.retryReceived;
             sumRejected += s.rejected;
             perWorkerLines.add(String.format(
-                    "Worker%d - received=%d success=%d fail=%d retryReceived=%d rejected=%d "
-                            + "avgWait=%.2fs p2pEvents=%d p2pSent=%d p2pReceived=%d totalTime=%.2fs",
-                    workerId, s.received, s.success, s.fail, s.retryReceived, s.rejected,
+                    "Worker%d - received=%d (accepted=%d) success=%d fail=%d retryReceived=%d rejected=%d "
+                            + "avgWait=%.2fs p2pSendEvents=%d p2pSent=%d p2pReceived=%d totalTime=%.2fs",
+                    workerId, s.received, s.received - s.rejected, s.success, s.fail, s.retryReceived, s.rejected,
                     s.avgWait, s.p2pEvents, s.p2pSent, s.p2pReceived, s.totalTime));
         }
 
@@ -338,7 +338,7 @@ public class Master {
         log.log(finalT, "STAT", "INFO", "Fault reassignments          : " + reassignCount.get() + " 건");
         log.log(finalT, "STAT", "INFO", "Priority tasks re-dispatched : " + sumRetry + " 건");
         log.log(finalT, "STAT", "INFO", "Queue overflow rejects       : " + queueRejectCount.get() + " 건 (worker report: " + sumRejected + ")");
-        log.log(finalT, "STAT", "INFO", "P2P load balance events      : " + sumP2PEvents + " 회");
+        log.log(finalT, "STAT", "INFO", "P2P send events              : " + sumP2PEvents + " 회");
         log.log(finalT, "STAT", "INFO", "P2P tasks transferred        : " + sumP2PTasks + " 건");
         log.log(finalT, "STAT", "INFO", String.format("Total execution time         : %.2f sec", finalT));
         log.log(finalT, "STAT", "INFO", "--- Per-Worker Stats ---");

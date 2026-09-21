@@ -55,7 +55,7 @@ public class WorkerThread extends Thread {
     private int waitSampleCount = 0;
     private final AtomicInteger p2pSent = new AtomicInteger(0);
     private final AtomicInteger p2pReceived = new AtomicInteger(0);
-    private final AtomicInteger p2pEvents = new AtomicInteger(0); // P2P 이전이 일어난 횟수 (p2pSent는 이전한 작업 건수)
+    private final AtomicInteger p2pEvents = new AtomicInteger(0); // 내가 이전을 건 횟수 (p2pSent는 이전한 작업 건수)
 
     public WorkerThread(int workerId, String masterHost, int masterPort,
                          int myP2PPort, int[] peerP2PPorts, String peerHost) {
@@ -95,8 +95,9 @@ public class WorkerThread extends Thread {
                 // Master가 실제보다 큐가 더 찬 것으로 오판해 분배가 밀릴 수 있다).
                 Task task = readyQueue.poll();
                 if (task != null) {
-                    logQueueWarnIfNeeded();
+                    // 큐 보고가 시계를 1초 밀기 때문에, WARN은 보고 뒤에 찍어야 Processing과 시각이 맞는다.
                     reportQueueSize();
+                    logQueueWarnIfNeeded();
                     processTask(task);
                 }
 
@@ -280,55 +281,69 @@ public class WorkerThread extends Thread {
 
         for (int peerPort : peerP2PPorts) {
             Integer peerSize = queryPeerQueueSize(peerPort);
-            if (peerSize != null && peerSize < mySize) {
-                int moveCount = (mySize - peerSize) / 2;
-                if (moveCount <= 0) {
-                    continue;
-                }
+            if (peerSize == null) {
+                continue;
+            }
+            // peer에게 물어보는 동안 내 큐가 변했을 수 있으므로 꺼내기 직전 크기를 다시 읽는다.
+            int beforeSize = readyQueue.size();
+            if (peerSize >= beforeSize) {
+                continue;
+            }
+            int moveCount = (beforeSize - peerSize) / 2;
+            if (moveCount <= 0) {
+                continue;
+            }
 
-                List<Task> toMove = readyQueue.pollFromTail(moveCount);
-                if (toMove.isEmpty()) {
-                    // 뒤쪽이 전부 재할당 작업이라 넘길 게 없음 -> 이 peer는 건너뛰고 다음 peer 시도.
-                    continue;
-                }
-                // 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
-                // 여러 개를 한 번에 뺐으므로, 한 개씩 빠져나간 직후의 크기마다 체크한다.
-                int afterRemoval = readyQueue.size();
-                for (int i = toMove.size() - 1; i >= 0; i--) {
-                    logQueueWarnIfNeeded(afterRemoval + i);
-                }
+            List<Task> toMove = readyQueue.pollFromTail(moveCount);
+            if (toMove.isEmpty()) {
+                // 뒤쪽이 전부 재할당 작업이라 넘길 게 없음 -> 이 peer는 건너뛰고 다음 peer 시도.
+                continue;
+            }
+            // 큐가 70% 초과한 상태에서 작업이 "들고날 때마다 매번" WARN.
+            // 여러 개를 한 번에 뺐으므로, 한 개씩 빠져나간 직후의 크기마다 체크한다.
+            int afterRemoval = readyQueue.size();
+            for (int i = toMove.size() - 1; i >= 0; i--) {
+                logQueueWarnIfNeeded(afterRemoval + i);
+            }
 
-                int peerId = peerPort - (myP2PPort - workerId); // P2P 포트 = 기준 포트 + workerId
-                int acked = transferTasksToPeer(peerPort, toMove);
-                p2pSent.addAndGet(acked);
-                if (acked > 0) {
-                    p2pEvents.incrementAndGet();
-                }
+            int peerId = peerPort - (myP2PPort - workerId); // P2P 포트 = 기준 포트 + workerId
 
-                // 동시성 문제 대응: peer에게 물어본 시점과 실제로 전송한 시점 사이에
-                // 상황이 바뀌어서(Master가 그 사이 peer에게 새 작업을 배급했거나, 다른 Worker도
-                // 동시에 같은 peer에게 넘기려고 했거나 등) peer 큐가 이미 차서 일부만 받아줬을 수 있다.
-                // 못 받아들여진 나머지를 그냥 버리면 해당 KV가 영원히 유실되어 전체 시뮬레이션이
-                // 끝나지 않게 되므로, 반드시 내 큐로 되돌려놓는다 (방금 뺀 자리라 100% 들어간다).
-                // 받는 쪽(P2PServer)은 앞에서부터 받다가 멈추므로, acked 이후 작업이 못 받은 작업이다.
-                if (acked < toMove.size()) {
-                    for (int i = acked; i < toMove.size(); i++) {
-                        readyQueue.offer(toMove.get(i));
-                        logQueueWarnIfNeeded(); // 되돌아와서 다시 들어온 이벤트 (한 개마다)
-                    }
-                    log.log(clock.get(), "LB", "WARN",
-                            (toMove.size() - acked) + " tasks rejected by Worker" + peerId
-                                    + " (race condition), returned to my queue: "
-                                    + describeKeys(toMove.subList(acked, toMove.size())));
-                }
-                reportQueueSize();
+            // ACK 왕복이 끝난 시각으로 로그를 찍으면 받는 쪽 수신 로그보다 뒤로 밀리므로,
+            // 전송 시각을 미리 잡아두고 그 값으로 남긴다.
+            double sendClock = clock.advance(Constants.NETWORK_DELAY);
+            int acked = transferTasksToPeer(peerPort, toMove, sendClock);
+            p2pSent.addAndGet(acked);
+            if (acked > 0) {
+                p2pEvents.incrementAndGet();
+            }
 
-                log.log(clock.get(), "LB", "SUCCESS",
+            // 한 건도 못 넘겼으면 이전이 일어난 게 아니므로 로그를 남기지 않는다 (사유는 아래 WARN).
+            // 반려분은 바로 아래에서 되돌아오므로 "->" 뒤는 현재 크기가 아니라 순효과로 적는다.
+            if (acked > 0) {
+                log.log(sendClock, "LB", "SUCCESS",
                         acked + " tasks transferred via P2P to Worker" + peerId + ": "
                                 + describeKeys(toMove.subList(0, acked))
-                                + ". Queue: " + mySize + "/10 -> " + readyQueue.size() + "/10");
-                return; // 이번 주기엔 한 peer에게만 이전
+                                + ". Queue: " + beforeSize + "/10 -> " + (beforeSize - acked) + "/10");
             }
+
+            // 동시성 문제 대응: peer에게 물어본 시점과 실제로 전송한 시점 사이에
+            // 상황이 바뀌어서(Master가 그 사이 peer에게 새 작업을 배급했거나, 다른 Worker도
+            // 동시에 같은 peer에게 넘기려고 했거나 등) peer 큐가 이미 차서 일부만 받아줬을 수 있다.
+            // 못 받아들여진 나머지를 그냥 버리면 해당 KV가 영원히 유실되어 전체 시뮬레이션이
+            // 끝나지 않게 되므로, 반드시 내 큐로 되돌려놓는다 (방금 뺀 자리라 100% 들어간다).
+            // 받는 쪽(P2PServer)은 앞에서부터 받다가 멈추므로, acked 이후 작업이 못 받은 작업이다.
+            if (acked < toMove.size()) {
+                for (int i = acked; i < toMove.size(); i++) {
+                    readyQueue.offer(toMove.get(i));
+                    logQueueWarnIfNeeded(); // 되돌아와서 다시 들어온 이벤트 (한 개마다)
+                }
+                log.log(clock.get(), "LB", "WARN",
+                        (toMove.size() - acked) + " tasks rejected by Worker" + peerId
+                                + " (race condition), returned to my queue: "
+                                + describeKeys(toMove.subList(acked, toMove.size())));
+            }
+            reportQueueSize();
+            return; // 이번 주기엔 한 peer에게만 이전
         }
     }
 
@@ -352,7 +367,7 @@ public class WorkerThread extends Thread {
     }
 
     /** peer Worker에게 작업 목록을 실제로 전송하고, 몇 개가 받아들여졌는지(ACK) 확인한다. */
-    private int transferTasksToPeer(int peerPort, List<Task> tasks) {
+    private int transferTasksToPeer(int peerPort, List<Task> tasks, double sendClock) {
         if (tasks.isEmpty()) {
             return 0;
         }
@@ -374,14 +389,12 @@ public class WorkerThread extends Thread {
                 values.append(t.value);
             }
 
-            // P2P 작업 이전도 노드 간 통신이므로 1초 지연을 가상으로 반영.
-            double t = clock.advance(Constants.NETWORK_DELAY);
             Message transfer = new Message("P2P_TRANSFER");
             transfer.set("fromId", String.valueOf(workerId));
             transfer.set("keys", keys.toString());
             transfer.set("indexes", indexes.toString());
             transfer.set("values", values.toString());
-            transfer.set("clock", String.valueOf(t));
+            transfer.set("clock", String.valueOf(sendClock));
             out.println(transfer.toLine());
 
             Message ack = Message.parse(in.readLine());
@@ -399,13 +412,15 @@ public class WorkerThread extends Thread {
         double avgWait = waitSampleCount > 0 ? (totalWaitTime / waitSampleCount) : 0.0;
 
         log.log(t, "STAT", "INFO", "=== WORKER" + workerId + " FINAL STATISTICS ===");
-        log.log(t, "STAT", "INFO", "Total tasks received    : " + totalReceived);
+        // 거절한 건도 포함된 값이라 실제 큐에 들어간 수를 같이 적는다.
+        log.log(t, "STAT", "INFO", "Total tasks received    : " + totalReceived
+                + " (accepted " + (totalReceived - queueRejected) + ")");
         log.log(t, "STAT", "INFO", "SUCCESS (처리량)        : " + totalSuccess);
         log.log(t, "STAT", "INFO", "FAIL (20% rule)         : " + totalFail);
         log.log(t, "STAT", "INFO", "Priority (retry) tasks  : " + retryReceived + " 건");
         log.log(t, "STAT", "INFO", "Queue overflow rejects  : " + queueRejected + " 건");
         log.log(t, "STAT", "INFO", String.format("Avg waiting time        : %.2f sec", avgWait));
-        log.log(t, "STAT", "INFO", "P2P load balance events : " + p2pEvents.get() + " 회");
+        log.log(t, "STAT", "INFO", "P2P send events         : " + p2pEvents.get() + " 회");
         log.log(t, "STAT", "INFO", "P2P tasks transferred   : " + p2pSent.get() + " (sent) / " + p2pReceived.get() + " (recv)");
         log.log(t, "STAT", "INFO", String.format("Total execution time    : %.2f sec", t));
 
