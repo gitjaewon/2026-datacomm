@@ -30,18 +30,20 @@ public class P2PServer extends Thread {
     private final FileLogger log;
     private final VirtualClock clock;
     private final AtomicInteger p2pReceivedCounter; // WorkerThread와 공유하는 통계 카운터
+    private final AtomicInteger masterTaskReceived; // Master에게서 받은 TASK 수 (QUEUE 보고용)
     private final MasterLink masterLink; // P2P로 받은 직후 새 큐 크기를 Master에 바로 보고하기 위함
 
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
     public P2PServer(int port, ReadyQueue readyQueue, FileLogger log, VirtualClock clock,
-                      AtomicInteger p2pReceivedCounter, MasterLink masterLink) {
+                      AtomicInteger p2pReceivedCounter, AtomicInteger masterTaskReceived, MasterLink masterLink) {
         this.port = port;
         this.readyQueue = readyQueue;
         this.log = log;
         this.clock = clock;
         this.p2pReceivedCounter = p2pReceivedCounter;
+        this.masterTaskReceived = masterTaskReceived;
         this.masterLink = masterLink;
         setDaemon(true);
         setName("P2PServer-" + port);
@@ -120,6 +122,7 @@ public class P2PServer extends Thread {
                 // 착각해서 계속 일을 더 밀어넣을 수 있다. P2P로 받은 직후 바로 새 큐 크기를 보고한다.
                 if (accepted > 0) {
                     Message queueMsg = new Message("QUEUE");
+                    queueMsg.set("recv", String.valueOf(masterTaskReceived.get()));
                     queueMsg.set("size", String.valueOf(readyQueue.size()));
                     queueMsg.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
                     masterLink.send(queueMsg);

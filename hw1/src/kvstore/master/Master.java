@@ -85,8 +85,8 @@ public class Master {
      * Worker가 QUEUE 메시지로 자기 큐 크기를 보고해올 때마다 호출됨.
      * 큐가 최대치(10)에 도달한 순간을 여기서 감지해서 WARN 로그를 남긴다.
      */
-    public void onWorkerQueueUpdate(int workerId, int size) {
-        scheduler.updateQueueSize(workerId, size);
+    public void onWorkerQueueUpdate(int workerId, int size, int recv) {
+        scheduler.updateQueueSize(workerId, size, recv);
         if (size >= Constants.QUEUE_MAX) {
             log.log(clock.get(), "DISTRIB", "WARN",
                     "Worker" + workerId + " queue full (" + size + "/10). Pausing dispatch.");
@@ -213,8 +213,8 @@ public class Master {
             double t = clock.advance(Constants.NETWORK_DELAY);
             // 전송 전에 기록해야, Worker가 곧바로 거절 응답을 보내도 원래 큐를 알 수 있다.
             kvStore.markDispatched(pending);
+            scheduler.onDispatched(workerId);
             handler.sendTask(pending.key, index, value, pending.isRetry, t);
-            scheduler.onDispatchedOptimistically(workerId);
 
             String label = kvLabel(index, pending.key);
             if (pending.isRetry) {
