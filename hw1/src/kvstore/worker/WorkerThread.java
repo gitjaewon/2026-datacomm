@@ -95,7 +95,6 @@ public class WorkerThread extends Thread {
                 // Master가 실제보다 큐가 더 찬 것으로 오판해 분배가 밀릴 수 있다).
                 Task task = readyQueue.poll();
                 if (task != null) {
-                    // 큐 보고가 시계를 1초 밀기 때문에, WARN은 보고 뒤에 찍어야 Processing과 시각이 맞는다.
                     reportQueueSize();
                     logQueueWarnIfNeeded();
                     processTask(task);
@@ -232,8 +231,9 @@ public class WorkerThread extends Thread {
         masterLink.send(msg);
     }
 
+    /** QUEUE는 상태 보고용 제어 메시지라 통신 지연을 더하지 않는다. */
     private void reportQueueSize() {
-        double t = clock.advance(Constants.NETWORK_DELAY);
+        double t = clock.get();
         Message msg = new Message("QUEUE");
         msg.set("recv", String.valueOf(totalReceived.get()));
         msg.set("size", String.valueOf(readyQueue.size()));
@@ -356,7 +356,7 @@ public class WorkerThread extends Thread {
 
             Message query = new Message("P2P_QUERY");
             query.set("fromId", String.valueOf(workerId));
-            query.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
+            query.set("clock", String.valueOf(clock.get()));
             out.println(query.toLine());
 
             Message res = Message.parse(in.readLine());

@@ -35,8 +35,10 @@ DISTRIB (INFO, WARN, SUCCESS)
               (예: "Dispatching KV[0002] (Key=a3f7) -> Worker2")
   - INFO    : 진행률 요약(500개 단위)과 각 Worker의 현재 큐 크기 스냅샷
               (예: "Progress: 500 / 5000 KV pairs stored (10.0%)")
-  - WARN    : 특정 Worker의 큐가 가득 차서(10/10) 그 Worker로의 분배를
-              일시 중단할 때 기록
+  - WARN    : Worker가 큐 크기 10/10을 보고해왔을 때 기록 (그 Worker로의
+              분배 일시 중단). Master는 이 보고값에 아직 도착하지 않은
+              작업 수까지 더해서 판단하므로, 이 로그가 없어도 추적값이
+              10이면 그 Worker에게는 보내지 않는다
   - WARN    : Worker 큐가 가득 차서 거절된 작업을 다시 큐에 넣을 때 기록.
               장애가 아니므로 재할당 번호와 별도로 번호(#n)를 매김
               (예: "KV[0004] (Key=a3f7) rejected by Worker1 (queue overflow). Requeued (#3).")
