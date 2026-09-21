@@ -18,6 +18,7 @@ public class FileLogger {
 
     private final String nodeName;
     private final PrintWriter writer;
+    private double lastClock = 0.0;
 
     public FileLogger(String filePath, String nodeName) {
         this.nodeName = nodeName;
@@ -30,6 +31,10 @@ public class FileLogger {
     }
 
     public synchronized void log(double clock, String event, String status, String message) {
+        if (clock < lastClock) {
+            clock = lastClock;
+        }
+        lastClock = clock;
         String line = String.format("[%.2f] %s | %-9s | %-7s | %s", clock, nodeName, event, status, message);
         writer.println(line);
     }
