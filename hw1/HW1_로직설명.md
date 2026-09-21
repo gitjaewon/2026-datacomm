@@ -55,7 +55,7 @@ Worker (로컬 PC, 1개 프로세스 = WorkerLauncher)
    - `kvStore.nextPendingKey()` : **priorityQueue(재시도 대기)를 항상 먼저** 꺼내고, 없으면 `pendingQueue`에서 꺼냄. 어느 큐에서 꺼냈는지 `PendingKey.isRetry`로 함께 반환
    - `scheduler.pickWorkerForDispatch(excludeWorkerId)` : **최소 큐 우선(Least Queue First)** — 큐가 가장 여유로운 Worker를 고름. 재할당 작업이면 `kvStore.lastFailedWorkerOf(key)`로 직전에 실패시킨 Worker를 제외. 보낼 Worker가 없으면 `-1`
    - `-1`이면 `kvStore.returnUndispatched()`로 원래 있던 큐(pending/priority)에 되돌리고 20ms 대기 후 재시도 (busy-wait 방지용이지 System Clock과는 무관)
-   - 정상 분배 시: `clock.advance(NETWORK_DELAY)` → `kvStore.markDispatched()`로 재할당 여부 기록 (거절 응답이 바로 와도 원래 큐를 알 수 있도록 **전송 전에** 기록) → `ClientHandler.sendTask(key, value, isRetry, t)`로 TASK 전송 → `scheduler.onDispatchedOptimistically()`로 낙관적으로 큐 크기 +1
+   - 정상 분배 시: `clock.advance(NETWORK_DELAY)` → `kvStore.markDispatched()`로 재할당 여부 기록 (거절 응답이 바로 와도 원래 큐를 알 수 있도록 **전송 전에** 기록) → `ClientHandler.sendTask(key, value, isRetry, t)`로 TASK 전송 → `scheduler.onDispatched()`로 그 Worker에게 보낸 누적 수 +1 (Master가 보는 큐 크기 = 보고된 크기 + 보낸 수 - Worker가 받은 수)
    - 로그: 신규 작업은 `DISTRIB INFO "Dispatching ..."`, 재할당 작업은 `DISTRIB WARN "priority requeue. Reassigning to WorkerN (excluded WorkerM)."`
 4. **RESULT 수신 (`onWorkerResult`)**: `ClientHandler`가 소켓에서 `RESULT` 메시지를 읽을 때마다 호출
    - `SUCCESS` → `kvStore.markSuccess(key)`로 저장 완료 처리 + `logProgressIfNeeded()`로 완료 개수가 500의 배수(500, 1000, ...)에 도달할 때마다 `DISTRIB` INFO 로그로 "Progress: n/5000 (x%)" + `scheduler.describeQueues()`(Worker별 큐 크기 스냅샷) 기록 (4-1 Master.txt 예시 재현용, 채점 필수 지표는 아님)
@@ -122,7 +122,7 @@ while (!shutdownRequested) {
 | Master→Worker | `TASK` | key, value, retry(재할당 작업이면 true), clock |
 | Master→Worker | `SHUTDOWN` | clock |
 | Worker→Master | `RESULT` | key, status(SUCCESS/FAIL/REJECTED), clock |
-| Worker→Master | `QUEUE` | size, clock |
+| Worker→Master | `QUEUE` | size, recv(Master에게서 받은 TASK 누적 수), clock |
 | Worker→Master | `STATS` | received, success, fail, avgWait, p2pSent, p2pReceived, p2pEvents, retryReceived, rejected, totalTime, clock |
 | Worker↔Worker | `P2P_QUERY` | fromId, clock |
 | Worker↔Worker | `P2P_STATUS` | size, clock |

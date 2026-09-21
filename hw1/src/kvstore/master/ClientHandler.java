@@ -52,7 +52,7 @@ public class ClientHandler extends Thread {
 
                 switch (msg.getType()) {
                     case "QUEUE":
-                        master.onWorkerQueueUpdate(workerId, msg.getInt("size"));
+                        master.onWorkerQueueUpdate(workerId, msg.getInt("size"), msg.getInt("recv"));
                         break;
                     case "RESULT":
                         master.onWorkerResult(workerId, msg.get("key"), msg.get("status"));
