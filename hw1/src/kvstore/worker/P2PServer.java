@@ -97,16 +97,24 @@ public class P2PServer extends Thread {
                             acceptedKeys.append(", ");
                         }
                         acceptedKeys.append(Task.label(Integer.parseInt(indexes[i]), keys[i]));
-                        logQueueWarnIfNeeded(); // 작업이 한 개 들어올 때마다 체크
                     } else {
                         break;
                     }
                 }
                 p2pReceivedCounter.addAndGet(accepted);
 
-                log.log(clock.get(), "LB", "SUCCESS",
-                        "Received " + accepted + " tasks via P2P from Worker" + req.get("fromId") + ": "
-                                + acceptedKeys + ". Queue: " + readyQueue.size() + "/10");
+                // 한 건도 못 받았으면 이전이 일어난 게 아니므로 로그를 남기지 않는다.
+                if (accepted > 0) {
+                    int newSize = readyQueue.size();
+                    log.log(clock.get(), "LB", "SUCCESS",
+                            "Received " + accepted + " tasks via P2P from Worker" + req.get("fromId") + ": "
+                                    + acceptedKeys + ". Queue: " + newSize + "/10");
+
+                    // 한 개씩 들어온 직후의 크기마다 WARN. 위 LB 로그 뒤에 찍어야 순서가 맞는다.
+                    for (int k = 1; k <= accepted; k++) {
+                        logQueueWarnIfNeeded(newSize - accepted + k);
+                    }
+                }
 
                 // 큐가 늘어난 걸 다음 TASK/RESULT 보고 때까지 묵혀두면 Master가 여전히 한가하다고
                 // 착각해서 계속 일을 더 밀어넣을 수 있다. P2P로 받은 직후 바로 새 큐 크기를 보고한다.
@@ -128,8 +136,7 @@ public class P2PServer extends Thread {
     }
 
     /** 큐가 70%를 초과한 상태에서 작업이 들고날 때마다 WARN을 기록. */
-    private void logQueueWarnIfNeeded() {
-        int size = readyQueue.size();
+    private void logQueueWarnIfNeeded(int size) {
         if (size > Constants.QUEUE_MAX * Constants.QUEUE_WARN_RATIO) {
             log.log(clock.get(), "QUEUE", "WARN", "Queue over 70% (" + size + "/10) after P2P receive.");
         }
