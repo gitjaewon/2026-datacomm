@@ -7,7 +7,7 @@ import java.util.Map;
  * Master <-> Worker, Worker <-> Worker 사이에서 주고받는 모든 메시지의 공통 포맷.
  *
  * 한 줄짜리 텍스트로 직렬화한다: TYPE|key1=value1|key2=value2|...
- * 예) TASK|key=a3f7|value=42|retry=false|clock=12.34
+ * 예) TASK|key=a3f7|index=2|value=42|retry=false|clock=12.34
  *
  * ※ 헷갈리지 않게 구분할 것:
  *   - 이 Message의 TYPE(TASK, RESULT, QUEUE, P2P_QUERY ...)은 "소켓으로 주고받는 네트워크 프로토콜" 용어.
@@ -23,7 +23,7 @@ import java.util.Map;
  *     REGISTER  : workerId               (접속 직후 1회, 자기 workerId를 알림)
  *     RESULT    : key, status(SUCCESS/FAIL/REJECTED), clock
  *                 (FAIL = 20% 규칙으로 처리 실패, REJECTED = 큐가 가득 차서 받지 못함)
- *     QUEUE     : size, clock            (자신의 현재 큐 크기를 보고)
+ *     QUEUE     : recv, size, clock      (자신의 현재 큐 크기와, Master에게서 받은 TASK 누적 수를 보고)
  *     STATS     : received, success, fail, avgWait, p2pSent, p2pReceived,
  *                 p2pEvents, retryReceived, rejected, totalTime, clock
  *                 (SHUTDOWN을 받고 종료하기 직전, Master가 최종 STAT 로그에 노드별 통계를
