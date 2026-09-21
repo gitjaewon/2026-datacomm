@@ -231,9 +231,8 @@ public class WorkerThread extends Thread {
         masterLink.send(msg);
     }
 
-    /** QUEUE는 상태 보고용 제어 메시지라 통신 지연을 더하지 않는다. */
     private void reportQueueSize() {
-        double t = clock.get();
+        double t = clock.advance(Constants.NETWORK_DELAY);
         Message msg = new Message("QUEUE");
         msg.set("recv", String.valueOf(totalReceived.get()));
         msg.set("size", String.valueOf(readyQueue.size()));
@@ -356,7 +355,7 @@ public class WorkerThread extends Thread {
 
             Message query = new Message("P2P_QUERY");
             query.set("fromId", String.valueOf(workerId));
-            query.set("clock", String.valueOf(clock.get()));
+            query.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
             out.println(query.toLine());
 
             Message res = Message.parse(in.readLine());
@@ -418,7 +417,7 @@ public class WorkerThread extends Thread {
                 + " (accepted " + (totalReceived.get() - queueRejected) + ")");
         log.log(t, "STAT", "INFO", "SUCCESS (처리량)        : " + totalSuccess);
         log.log(t, "STAT", "INFO", "FAIL (20% rule)         : " + totalFail);
-        log.log(t, "STAT", "INFO", "Priority (retry) tasks  : " + retryReceived + " 건");
+        log.log(t, "STAT", "INFO", "Fault reassign received : " + retryReceived + " 건");
         log.log(t, "STAT", "INFO", "Queue overflow rejects  : " + queueRejected + " 건");
         log.log(t, "STAT", "INFO", String.format("Avg waiting time        : %.2f sec", avgWait));
         log.log(t, "STAT", "INFO", "P2P send events         : " + p2pEvents.get() + " 회");

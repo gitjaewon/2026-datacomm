@@ -67,12 +67,18 @@ DISCONNECT (WARN)
 
 STAT (INFO, WARN)
   - INFO : 전체 처리 완료 후 최종 통계 기록
-           (총 처리 건수, 총 SUCCESS/FAIL, 장애 재할당 횟수, 재할당 분배 수,
-            큐 초과 거절 수, P2P 이전 송신 횟수(회), P2P 이전 작업 수(건),
-            총 수행시간, 그리고 Worker별 통계 한 줄씩)
+           (총 처리 건수, 총 SUCCESS/FAIL, 장애 재할당 횟수, 재할당 작업
+            전송 수, 큐 초과 거절 수, P2P 이전 송신 횟수(회), P2P 이전
+            작업 수(건), 총 수행시간, 그리고 Worker별 통계 한 줄씩)
+  - "Fault reassignments" = 장애 재할당 횟수 (20% 규칙 실패 건수)
+  - "Reassigned task dispatches" = 재할당 작업을 실제로 보낸 횟수.
+    재할당 작업이 큐 초과로 거절되면 다시 보내므로 장애 재할당 횟수보다
+    클 수 있고, 그 내역을 같은 줄에 적는다
+    (예: "Reassigned task dispatches   : 1280 건 (= fault reassignments 1264 + resent after queue overflow 16)")
   - WARN : 종료 시점까지 특정 Worker의 STATS 보고를 못 받은 경우
   - Worker별 줄의 received는 큐 초과 거절도 포함한 값이라, 실제 큐에
-    들어간 수를 (accepted=N)으로 함께 적는다
+    들어간 수를 (accepted=N)으로 함께 적는다. reassignReceived는 그
+    Worker가 받은 재할당 작업 수
 
 KVSTORE (INFO)
   - 전체 처리 완료 시 KV 저장소 전체(5,000쌍)를 key 정렬하여
@@ -134,7 +140,8 @@ LB (SUCCESS, WARN)
 
 STAT (INFO)
   - Worker 종료 직전, 자신의 최종 통계를 기록
-    (수신 작업 수, SUCCESS(처리량), FAIL(20% 규칙), 재할당 작업 수신 수,
+    (수신 작업 수, SUCCESS(처리량), FAIL(20% 규칙),
+     장애 재할당 작업 수신 수("Fault reassign received"),
      큐 초과 거절 수, 평균 대기시간, P2P 이전 송신 횟수(회),
      P2P 이전 작업 수(송신/수신), 총 수행시간)
   - Total tasks received는 큐 초과 거절도 포함한 값이라, 실제 큐에 들어간

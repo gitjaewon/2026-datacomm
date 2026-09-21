@@ -172,13 +172,18 @@ KVStore의 priorityQueue(최우선 큐)에 등록하면서 실패시킨 Worker�
 - 접속 직후 REGISTER 메시지로 자기 workerId를 Master에 알림
 - 접속 후 5초 안에 REGISTER가 안 오면 그 연결은 끊음
 - 장애 재할당 수 / 큐 초과 거절 수 / P2P 이전 횟수를 따로 집계해서 기록
+- Master STAT의 Reassigned task dispatches(재할당 작업 전송 수)는
+  Fault reassignments(장애 재할당 횟수)보다 클 수 있다. 재할당 작업이
+  큐 초과로 거절되면 한 번 더 보내기 때문이며, 로그에 그 내역을 함께
+  적는다 (= fault reassignments N + resent after queue overflow M)
+- Worker STAT의 Fault reassign received는 그 Worker가 받은 재할당 작업
+  수로, 모든 Worker 값을 합하면 Master의 Reassigned task dispatches와 같다
 - VirtualClock은 메시지 보낼 때마다 clock 값을 같이 보내서, 받는 쪽이
   자기 시계와 비교해 더 큰 값을 채택하는 방식으로 맞춤
-- 통신 지연 1초는 실제 데이터를 옮기는 메시지(TASK, SHUTDOWN, RESULT,
-  STATS, P2P_TRANSFER)에만 적용한다. 큐 크기 보고(QUEUE)와 P2P 조회/응답
-  (P2P_QUERY, P2P_STATUS, P2P_ACK)은 상태 확인용 제어 메시지라 지연 없이
-  현재 시각만 실어 보낸다 (작업마다 오가는 보고에까지 1초씩 붙이면 총
-  수행시간이 의미 없이 부풀기 때문)
+- 통신 지연 1초는 노드 간 모든 메시지(TASK, SHUTDOWN, RESULT, QUEUE,
+  STATS, P2P_QUERY, P2P_STATUS, P2P_TRANSFER, P2P_ACK)에 적용한다.
+  보내는 쪽이 System Clock을 1초 올린 뒤 그 값을 메시지에 실어 보낸다.
+  단, 접속 직후 1회 보내는 REGISTER는 분배 시작 전 접속 절차라 제외한다
 - 노드마다 시계를 따로 굴리므로 Master가 찍은 시각과 Worker가 찍은 시각의
   차이는 통신 지연 1초와 일치하지 않는다. 작업이 Worker 쪽에서 밀린
   만큼 더 벌어지는 것이고, "보낸 시각 <= 받은 시각"은 항상 지켜진다

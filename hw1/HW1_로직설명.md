@@ -37,9 +37,8 @@ Worker (로컬 PC, 1개 프로세스 = WorkerLauncher)
 - `sync(incoming)` : 상대가 보내온 clock 값과 내 시계 중 큰 쪽을 채택 (Lamport Clock과 같은 아이디어)
 - Master와 각 Worker는 서로 다른 프로세스라 시계를 물리적으로 공유할 수 없음 → 메시지마다 `clock` 필드를 실어 보내고 받는 쪽이 `sync()`로 느슨하게 맞춘다.
 - 메시지 종류별 `clock` 처리:
-  - `TASK`/`SHUTDOWN`(Master→Worker), `RESULT`/`STATS`(Worker→Master), `P2P_TRANSFER`(Worker→Worker) : **실제 데이터 전송**이므로 보내기 전에 `advance(NETWORK_DELAY=1.0)` 후 그 값을 `clock` 필드에 실음
-  - `QUEUE`(큐 크기 보고), `P2P_QUERY`/`P2P_STATUS`/`P2P_ACK` : 가벼운 상태 확인용 제어 메시지라 별도 지연 없이 현재 clock 값(`clock.get()`)만 실어서 sync만 함 (Worker는 작업 하나당 QUEUE를 두 번 보내므로, 여기에도 1초씩 부과하면 상태 보고만으로 총 수행시간이 의미 없이 부풀어서 제외)
-  - `REGISTER`(Worker→Master, 접속 직후 1회) : 통신이긴 하지만 "작업 처리"가 아니라 순수 접속 확인이라 지연 없이 처리. CONNECT 로그도 예시 숫자에 맞춘 조작 없이 `advance(0.01)`(Worker)/`advance(0.01)`(Master, 접속마다 누적)의 작은 고정값만 사용
+  - `TASK`/`SHUTDOWN`(Master→Worker), `RESULT`/`QUEUE`/`STATS`(Worker→Master), `P2P_QUERY`/`P2P_STATUS`/`P2P_TRANSFER`/`P2P_ACK`(Worker↔Worker) : 과제 명세("모든 노드 간 네트워크 지연은 1초")대로 **모든 노드 간 메시지**는 보내기 전에 `advance(NETWORK_DELAY=1.0)` 후 그 값을 `clock` 필드에 실음
+  - `REGISTER`(Worker→Master, 접속 직후 1회) : 작업 분배가 시작되기 전 접속 절차라 1초 지연을 두지 않음 (과제 로그 예시도 CONNECT를 0.5초대에 찍음). CONNECT 로그도 예시 숫자에 맞춘 조작 없이 `advance(0.01)`(Worker)/`advance(0.01)`(Master, 접속마다 누적)의 작은 고정값만 사용
 - **원칙적으로 이 프로그램에서 "시간이 걸린다"고 취급하는 대상은 딱 두 가지(처리시간, 통신지연)뿐이고, 그 외 모든 타이밍 판단(P2P 점검 주기 포함)도 반드시 이 VirtualClock 기준으로 이루어져야 한다.** `System.nanoTime()` 같은 실제 벽시계를 섞으면, 프로그램이 실시간 대기 없이 몇 초 만에 끝나버리는 것과 충돌해서 로직이 사실상 죽어버리는 문제가 생긴다 (4장 P2P 체크 부분 참고).
 
 ---
@@ -70,7 +69,7 @@ Worker (로컬 PC, 1개 프로세스 = WorkerLauncher)
 6. **종료 (`shutdownAll`)**: 전체 5,000개 완료되면
    - 모든 Worker에 `SHUTDOWN` 전송
    - `statsReceived.await()`로 Worker들의 STATS 도착까지 대기 (전부 이미 끝난 상태라 사실상 즉시 도착, 30초는 안전장치)
-   - Master `STAT` 로그: 총 처리 건수, 총 SUCCESS/FAIL, 장애 재할당 횟수, 재할당 분배 수, 큐 초과 거절 수, P2P 이벤트 횟수(회), P2P 이전 작업 수(건), 총 수행시간, Worker별 통계 한 줄씩. STATS를 못 받은 Worker는 `STAT WARN`
+   - Master `STAT` 로그: 총 처리 건수, 총 SUCCESS/FAIL, 장애 재할당 횟수(`Fault reassignments`), 재할당 작업 전송 수(`Reassigned task dispatches` = 장애 재할당 횟수 + 재할당 작업이 큐 초과로 거절돼 다시 보낸 수), 큐 초과 거절 수, P2P 이벤트 횟수(회), P2P 이전 작업 수(건), 총 수행시간, Worker별 통계 한 줄씩. STATS를 못 받은 Worker는 `STAT WARN`
    - `KVSTORE` 로그: 완료된 5,000쌍 전체를 key 정렬해서 한 줄씩 덤프 (`KVStore.snapshotStore()`)
    - `TERMINATE` : Graceful shutdown (별도 시간 지연 없이 직전 STAT과 같은 시각으로 기록)
 
@@ -152,7 +151,6 @@ while (!shutdownRequested) {
 - 재할당 작업은 직전에 실패시킨 Worker를 제외하고 보내므로, 나머지 Worker가 전부 가득 차 있으면 제외한 Worker가 비어 있어도 잠시 기다림 (Worker들이 계속 큐를 비우므로 멈추지는 않음)
 - 로그 시각이 한 파일 안에서 거꾸로 가지 않도록 `FileLogger`가 보정하므로, 몇 줄은 사건이 실제로 일어난 가상 시각보다 조금 늦게(직전 줄 시각으로) 찍힐 수 있음
 - P2P 이전 시 목적지 peer는 "포트 번호 순서대로 처음 만난, 나보다 큐가 적은 곳" — 가장 여유로운 peer를 찾는 것도 아니고 라운드로빈도 아님 (Readme에 이 알고리즘 그대로 서술하면 됨)
-- 통신 지연 1초는 보내는 쪽 시계를 1초 올리는 방식(`advance`)이라, Master는 가상 시간 1초에 TASK 1건씩만 보낼 수 있음. 총 수행시간은 이 전송 속도의 영향을 받음
-- 네트워크 지연은 "실제 데이터 전송성" 메시지(TASK/SHUTDOWN/RESULT/P2P_TRANSFER/STATS)에만 부과하고, 상태 조회성 메시지(QUEUE/P2P_QUERY/STATUS/ACK)에는 부과하지 않음 — 이유는 위 2장 참고
+- 통신 지연 1초는 보내는 쪽 시계를 1초 올리는 방식(`advance`)이라, Master는 가상 시간 1초에 TASK 1건씩만 보낼 수 있고, Worker는 작업 하나당 QUEUE 보고 2번 + RESULT 1번으로 약 3초의 통신 지연이 더해짐. 총 수행시간은 이 통신 지연의 영향을 크게 받음
 - Master의 workerId는 accept 순서가 아니라 REGISTER 메시지 기반이라, `Master.txt`의 CONNECT/DISTRIB 로그에 찍히는 WorkerN 번호가 실제 어느 물리 스레드(`WorkerN.txt`)인지 실행할 때마다 접속 타이밍에 따라 달라질 수 있음 — 그래도 항상 REGISTER 값으로 정확히 매핑되므로 로그 간 교차 확인은 항상 일치함
 - P2P 점검 주기(1~3초)는 VirtualClock 기준이라, 실제 실행 속도(빠르든 느리든)와 무관하게 "가상 시간이 얼마나 지났는가"만으로 판단함 — 분배 개선 후 EC2 Master + 로컬 Worker 테스트에서 P2P 이벤트 약 260회(이전 작업 약 940건)가 발생함. 분배가 고르게 되면서 과부하(큐 8개 이상) 자체가 줄어 예전(700~1,000회)보다 적음
