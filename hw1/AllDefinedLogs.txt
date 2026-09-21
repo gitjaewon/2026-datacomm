@@ -33,8 +33,10 @@ CONNECT (SUCCESS)
 DISTRIB (INFO, WARN, SUCCESS)
   - INFO    : 특정 Worker에게 신규 KV 작업을 분배할 때마다 기록
               (예: "Dispatching KV[0002] (Key=a3f7) -> Worker2")
-  - INFO    : 진행률 요약(500개 단위)과 각 Worker의 현재 큐 크기 스냅샷
+  - INFO    : 진행률 요약(500개 단위)과 Master가 추적 중인 각 Worker의
+              큐 크기 스냅샷 (보고된 큐 크기 + 아직 도착하지 않은 작업 수)
               (예: "Progress: 500 / 5000 KV pairs stored (10.0%)")
+              (예: "Worker1: queue=9, Worker2: queue=8, Worker3: queue=9, Worker4: queue=9")
   - WARN    : Worker가 큐 크기 10/10을 보고해왔을 때 기록 (그 Worker로의
               분배 일시 중단). Master는 이 보고값에 아직 도착하지 않은
               작업 수까지 더해서 판단하므로, 이 로그가 없어도 추적값이
@@ -42,6 +44,9 @@ DISTRIB (INFO, WARN, SUCCESS)
   - WARN    : Worker 큐가 가득 차서 거절된 작업을 다시 큐에 넣을 때 기록.
               장애가 아니므로 재할당 번호와 별도로 번호(#n)를 매김
               (예: "KV[0004] (Key=a3f7) rejected by Worker1 (queue overflow). Requeued (#3).")
+              Master는 가득 찬 Worker에게 보내지 않으므로 드물게만 생기며,
+              주로 P2P로 작업을 받은 Worker에 Master 작업이 동시에 도착한
+              경우다
   - SUCCESS : 실패한 작업을 최우선 큐에서 꺼내 다른 Worker에게 재할당할 때
               기록. 직전에 실패시킨 Worker는 후보에서 제외
               (예: "KV[0002] (Key=a3f7) reassigned to Worker3 (excluded Worker2).")
@@ -49,13 +54,16 @@ DISTRIB (INFO, WARN, SUCCESS)
 RESULT (SUCCESS, FAIL)
   - Worker로부터 작업 처리 결과(RESULT 메시지)를 받을 때마다 기록
   - SUCCESS : KV 저장 완료
+              (예: "KV[0004] (Key=a48d) stored by Worker4. value=21")
   - FAIL    : 20% 규칙으로 처리에 실패한 경우에만 기록. 최우선 큐
               (Priority Queue)에 재등록하며 재할당 번호(#n)를 함께 남김
+              (예: "KV[0011] (Key=6fa3) FAILED by Worker3 (20% rule). Requeued for reassignment (#1).")
               (큐 초과 거절은 여기가 아니라 DISTRIB WARN으로 기록)
 
 DISCONNECT (WARN)
   - Worker와의 소켓 연결이 끊어졌을 때 기록 (정상 종료 시 SHUTDOWN
     이후에도 소켓이 닫히므로 이 로그가 함께 남음)
+    (예: "Worker1 connection closed.")
 
 STAT (INFO, WARN)
   - INFO : 전체 처리 완료 후 최종 통계 기록
@@ -83,6 +91,7 @@ INIT (INFO)
 
 CONNECT (SUCCESS)
   - Master 접속(TCP 소켓 연결 + REGISTER 전송) 성공 시 기록
+    (예: "Connected to Master. Ready Queue initialized (0/10).")
 
 RECV (INFO, FAIL)
   - INFO : Master로부터 TASK 메시지(작업)를 수신했을 때 기록
@@ -119,7 +128,9 @@ LB (SUCCESS, WARN)
               (ACK를 기다리는 동안 내 파일에 더 늦은 시각의 줄이 먼저
                쓰였다면 위 규칙대로 그 시각으로 올려 찍힌다)
   - WARN    : peer가 이전 요청을 다 받아주지 못해(레이스 컨디션)
-              일부 작업이 내 큐로 롤백됐을 때. 롤백된 key 목록을 함께 기록
+              일부 또는 전부가 내 큐로 롤백됐을 때. 롤백된 key 목록을 함께
+              기록. 전부 롤백됐으면 SUCCESS 줄 없이 이 줄만 남음
+              (예: "1 tasks rejected by Worker4 (race condition), returned to my queue: KV[0868] (Key=833d)")
 
 STAT (INFO)
   - Worker 종료 직전, 자신의 최종 통계를 기록
