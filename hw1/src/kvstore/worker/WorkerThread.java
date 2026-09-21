@@ -46,7 +46,7 @@ public class WorkerThread extends Thread {
     private volatile boolean shutdownRequested = false;
 
     // 성능 통계를 위한 누적 값
-    private int totalReceived = 0;
+    private final AtomicInteger totalReceived = new AtomicInteger(0); // Master에게서 받은 TASK 수 (QUEUE 보고에도 실림)
     private int totalSuccess = 0;
     private int totalFail = 0;
     private int retryReceived = 0;  // Master에게 재할당(retry=true)으로 받은 작업 수
@@ -95,7 +95,6 @@ public class WorkerThread extends Thread {
                 // Master가 실제보다 큐가 더 찬 것으로 오판해 분배가 밀릴 수 있다).
                 Task task = readyQueue.poll();
                 if (task != null) {
-                    // 큐 보고가 시계를 1초 밀기 때문에, WARN은 보고 뒤에 찍어야 Processing과 시각이 맞는다.
                     reportQueueSize();
                     logQueueWarnIfNeeded();
                     processTask(task);
@@ -148,7 +147,7 @@ public class WorkerThread extends Thread {
     }
 
     private void startP2PServer() {
-        p2pServer = new P2PServer(myP2PPort, readyQueue, log, clock, p2pReceived, masterLink);
+        p2pServer = new P2PServer(myP2PPort, readyQueue, log, clock, p2pReceived, totalReceived, masterLink);
         p2pServer.start();
     }
 
@@ -161,7 +160,7 @@ public class WorkerThread extends Thread {
                 int index = msg.getInt("index");
                 int value = msg.getInt("value");
                 boolean isRetry = Boolean.parseBoolean(msg.get("retry"));
-                totalReceived++;
+                totalReceived.incrementAndGet();
 
                 String label = Task.label(index, key);
                 if (isRetry) {
@@ -232,9 +231,11 @@ public class WorkerThread extends Thread {
         masterLink.send(msg);
     }
 
+    /** QUEUE는 상태 보고용 제어 메시지라 통신 지연을 더하지 않는다. */
     private void reportQueueSize() {
-        double t = clock.advance(Constants.NETWORK_DELAY);
+        double t = clock.get();
         Message msg = new Message("QUEUE");
+        msg.set("recv", String.valueOf(totalReceived.get()));
         msg.set("size", String.valueOf(readyQueue.size()));
         msg.set("clock", String.valueOf(t));
         masterLink.send(msg);
@@ -355,7 +356,7 @@ public class WorkerThread extends Thread {
 
             Message query = new Message("P2P_QUERY");
             query.set("fromId", String.valueOf(workerId));
-            query.set("clock", String.valueOf(clock.advance(Constants.NETWORK_DELAY)));
+            query.set("clock", String.valueOf(clock.get()));
             out.println(query.toLine());
 
             Message res = Message.parse(in.readLine());
@@ -413,8 +414,8 @@ public class WorkerThread extends Thread {
 
         log.log(t, "STAT", "INFO", "=== WORKER" + workerId + " FINAL STATISTICS ===");
         // 거절한 건도 포함된 값이라 실제 큐에 들어간 수를 같이 적는다.
-        log.log(t, "STAT", "INFO", "Total tasks received    : " + totalReceived
-                + " (accepted " + (totalReceived - queueRejected) + ")");
+        log.log(t, "STAT", "INFO", "Total tasks received    : " + totalReceived.get()
+                + " (accepted " + (totalReceived.get() - queueRejected) + ")");
         log.log(t, "STAT", "INFO", "SUCCESS (처리량)        : " + totalSuccess);
         log.log(t, "STAT", "INFO", "FAIL (20% rule)         : " + totalFail);
         log.log(t, "STAT", "INFO", "Priority (retry) tasks  : " + retryReceived + " 건");
@@ -426,7 +427,7 @@ public class WorkerThread extends Thread {
 
         // Master가 최종 STAT 로그에 "노드별 처리 통계"를 남길 수 있도록 종료 전에 요약 통계를 보고한다.
         Message stats = new Message("STATS");
-        stats.set("received", String.valueOf(totalReceived));
+        stats.set("received", String.valueOf(totalReceived.get()));
         stats.set("success", String.valueOf(totalSuccess));
         stats.set("fail", String.valueOf(totalFail));
         stats.set("avgWait", String.valueOf(avgWait));
